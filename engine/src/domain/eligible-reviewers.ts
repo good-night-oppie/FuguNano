@@ -1,4 +1,4 @@
-import { createBetaSampler } from './beta-sampler.js';
+import { createBetaSampler, type PosteriorEntry } from './beta-sampler.js';
 import { OutcomeLogError, type OutcomeEvent } from './outcome-log.js';
 import { foldPosteriors, type PolicyArm } from './route-posterior.js';
 import type { CandidateConfig } from './routing-config.js';
@@ -37,6 +37,13 @@ export interface RankResult {
   readonly ranked: ReadonlyArray<CandidateConfig>;
   /** Frozen one-sentence, no hidden state, no confidence numbers. */
   readonly reason: string;
+  /**
+   * The folded posterior the Thompson draw consumed (canonical order), so a
+   * route.decided event can carry a self-contained replay tuple even if the
+   * log gains events between our read and our append. Null for the static
+   * arm, which consumes no posterior.
+   */
+  readonly posteriors: ReadonlyArray<PosteriorEntry> | null;
 }
 
 const covered = (
@@ -93,7 +100,12 @@ export const rankReviewers = (
   }
   const ordered = canonicalOrder(eligible);
   if (policyArm === 'static') {
-    return { policyArm, ranked: ordered, reason: explain(ordered[0]!.name, 'static') };
+    return {
+      policyArm,
+      ranked: ordered,
+      reason: explain(ordered[0]!.name, 'static'),
+      posteriors: null,
+    };
   }
   if (!options.seed) {
     throw new OutcomeLogError('INVALID_EVENT', 'thompson rank requires the route seed');
@@ -115,5 +127,5 @@ export const rankReviewers = (
       );
     })
     .map((c) => byName.get(c.name)!);
-  return { policyArm, ranked, reason: explain(ranked[0]!.name, 'thompson') };
+  return { policyArm, ranked, reason: explain(ranked[0]!.name, 'thompson'), posteriors };
 };

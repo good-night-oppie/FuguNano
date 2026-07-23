@@ -134,7 +134,12 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/,
 ];
 
-const scanForSecrets = (value: unknown, keyPath: string): void => {
+/**
+ * Recursive credential-shape tripwire, exported so the dispatch wiring can
+ * hold outbound machine JSON to the same bar as stored events. Throws
+ * SECRET_MATERIAL naming only the field path, never the match.
+ */
+export const assertNoSecretMaterial = (value: unknown, keyPath: string): void => {
   if (typeof value === 'string') {
     for (const pattern of SECRET_PATTERNS) {
       if (pattern.test(value)) {
@@ -146,12 +151,12 @@ const scanForSecrets = (value: unknown, keyPath: string): void => {
   }
   if (Array.isArray(value)) {
     value.forEach((item, i) => {
-      scanForSecrets(item, `${keyPath}[${i}]`);
+      assertNoSecretMaterial(item, `${keyPath}[${i}]`);
     });
     return;
   }
   if (value !== null && typeof value === 'object') {
-    for (const [k, v] of Object.entries(value)) scanForSecrets(v, `${keyPath}.${k}`);
+    for (const [k, v] of Object.entries(value)) assertNoSecretMaterial(v, `${keyPath}.${k}`);
   }
 };
 
@@ -173,7 +178,7 @@ const validateEvent = (event: OutcomeEvent): void => {
   if (typeof event.observed_at !== 'string' || event.observed_at.length === 0) {
     throw new OutcomeLogError('INVALID_EVENT', 'observed_at required');
   }
-  scanForSecrets(event, 'event');
+  assertNoSecretMaterial(event, 'event');
 };
 
 // --- read side -------------------------------------------------------------

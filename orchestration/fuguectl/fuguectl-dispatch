@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-import { runSimpleBridge } from "./fuguectl-node-bridge.mjs";
+import { machineJsonEngineMissing, runSimpleBridge } from "./fuguectl-node-bridge.mjs";
+
+const argv = process.argv.slice(2);
+if (argv.includes("--auto") && machineJsonEngineMissing()) process.exit(74);
 
 runSimpleBridge({
-  argv: process.argv.slice(2),
+  argv,
   command: "dispatch",
   helpOnEmpty: false,
   help: `fuguectl-dispatch <target> [--harness fugue-cc|codex|opencode|agy] [--timeout-ms n] [--codex-clean] [--harness-arg x] [--out <file>] [--certificate <file> [--approval-class class] [--certificate-assumption text] [--certificate-externality fact]] [--require-output] [--verbose] [--workspace <ws> [--experience-query q] [--experience-source manual|task] [--experience-source-ref ref] [--experience-limit n] [--experience-budget-chars n] [--experience-trust trusted|all] [--experience-max-age-days n]] (--template <name> [--set K=V ...] | --prompt-file <f> | --prompt <text>) [--task <file>]
@@ -11,5 +14,13 @@ runSimpleBridge({
 --guard mode   pre-dispatch runtime guard: strict|warn|off (default warn; strict blocks on a block disposition)
 --incident <f> on failure, write the auto-derived incident+recovery packet here (summary always lands in --task)
 --task-digest  prefix the prompt with a bounded task-context digest of --task [--task-digest-budget n]
+
+Auto mode (AgentDex PR-review routing seam):
+fuguectl-dispatch --auto --task-type pr-review --policy-arm static|thompson [--json]
+  Frozen 7-field TaskProfile JSON on stdin; one machine-JSON object on stdout;
+  exit 0 completed / 2 invalid input / 7 no eligible or never started /
+  8 effect unknown / 74 state error. Config: \${XDG_CONFIG_HOME:-~/.config}/agentdex/pr-review-routing-v1.json
+  (override: AGENTDEX_ROUTING_CONFIG, absolute path only). Outcomes JSONL:
+  \${XDG_STATE_HOME:-~/.local/state}/agentdex/pr-review-outcomes-v1.jsonl
 `,
 });

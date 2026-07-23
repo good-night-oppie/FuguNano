@@ -93,11 +93,25 @@ export const resolveConfigPath = (env: Record<string, string | undefined>): stri
 
 // --- duplicate-key pre-scan -------------------------------------------------
 
+const SIMPLE_ESCAPES: Record<string, string> = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+};
+
 /**
  * Reject duplicate object keys at any depth. JSON.parse is last-wins on
  * duplicates, which would let a stale key silently shadow a live one —
  * "strict fail-closed is not free with JSON.parse" (R4-1). String-aware
- * scanner: tracks object scopes and the key set of each.
+ * scanner: tracks object scopes and the key set of each. Keys are compared
+ * DECODED, exactly as JSON.parse compares them — raw escape text would treat
+ * `"pr"` and `"pr"` as different keys and let the duplicate through
+ * (an adversarial-review catch; raw comparison is looser, not stricter).
  */
 export const assertNoDuplicateKeys = (raw: string): void => {
   type Scope = { kind: 'object'; keys: Set<string>; expectKey: boolean } | { kind: 'array' };
@@ -106,14 +120,24 @@ export const assertNoDuplicateKeys = (raw: string): void => {
   const n = raw.length;
 
   const readString = (): string => {
-    // raw[i] === '"' on entry; returns decoded-enough key (escapes kept raw —
-    // uniqueness on raw escape text is stricter, never looser).
+    // raw[i] === '"' on entry; returns the JSON-decoded string.
     let out = '';
     i += 1;
     while (i < n) {
       const ch = raw[i]!;
       if (ch === '\\') {
-        out += raw.slice(i, i + 2);
+        const esc = raw[i + 1];
+        if (esc === undefined) throw invalid('unterminated string');
+        if (esc === 'u') {
+          const hex = raw.slice(i + 2, i + 6);
+          if (!/^[0-9a-fA-F]{4}$/.test(hex)) throw invalid('invalid unicode escape');
+          out += String.fromCharCode(Number.parseInt(hex, 16));
+          i += 6;
+          continue;
+        }
+        const decoded = SIMPLE_ESCAPES[esc];
+        if (decoded === undefined) throw invalid('invalid escape');
+        out += decoded;
         i += 2;
         continue;
       }
@@ -134,7 +158,8 @@ export const assertNoDuplicateKeys = (raw: string): void => {
       const isKey = top !== undefined && top.kind === 'object' && top.expectKey;
       const text = readString();
       if (isKey && top.kind === 'object') {
-        if (top.keys.has(text)) throw invalid(`duplicate key ${JSON.stringify(text)}`);
+        // Reason hygiene (§D): never echo the key text — it is raw input.
+        if (top.keys.has(text)) throw invalid('duplicate object key');
         top.keys.add(text);
         top.expectKey = false;
       }
@@ -218,8 +243,10 @@ export const parseRoutingConfig = (raw: string): RoutingConfig => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (error) {
-    throw invalid(`not valid JSON (${(error as Error).message})`);
+  } catch {
+    // Never interpolate the parser message: modern V8 embeds a snippet of
+    // the input, and config bytes must not travel into reasons/logs.
+    throw invalid('not valid JSON');
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw invalid('top level must be a JSON object');

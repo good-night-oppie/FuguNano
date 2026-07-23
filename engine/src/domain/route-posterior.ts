@@ -52,6 +52,17 @@ export interface RouteDecidedInput {
   readonly configSha256: string;
   readonly routedAt: string;
   readonly deadlineAt: string;
+  /**
+   * Posterior snapshot the Thompson draw consumed (canonical order). Makes
+   * the replay tuple self-contained: (seed, posteriors, canonical order)
+   * reproduces the draw even if concurrent appends land between this
+   * route's fold and its fsync. Omitted for the static arm.
+   */
+  readonly posteriors?: ReadonlyArray<{
+    readonly candidateId: string;
+    readonly alpha: number;
+    readonly beta: number;
+  }>;
 }
 
 export interface OutcomeFinalizedInput {
@@ -100,6 +111,15 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
     config_sha256: input.configSha256,
     routed_at: input.routedAt,
     deadline_at: input.deadlineAt,
+    ...(input.posteriors !== undefined
+      ? {
+          posteriors: input.posteriors.map((p) => ({
+            candidate_id: p.candidateId,
+            alpha: p.alpha,
+            beta: p.beta,
+          })),
+        }
+      : {}),
   };
 };
 

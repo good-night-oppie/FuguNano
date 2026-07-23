@@ -10,7 +10,7 @@ import {
   NO_ELIGIBLE_AGENT_MESSAGE,
   type DispatchOptions,
 } from './dispatch-machine.js';
-import { computeRouteId, readOutcomeLog } from './outcome-log.js';
+import { computeAttemptId, computeRouteId, readOutcomeLog } from './outcome-log.js';
 import type { CandidateConfig } from './routing-config.js';
 
 let dir: string;
@@ -202,6 +202,40 @@ describe('post-spawn-no-fallback (pre-Task-1 test)', () => {
     expect(result.state).toBe('EFFECT_UNKNOWN');
     expect(result.attempts[0]!.detail).toBe('executor-mismatch');
     expect(readOutcomeLog(logPath).events[0]!['actual_executor']).toBeNull();
+  });
+
+  it('rc=0 but the claimed route/attempt id belongs to another dispatch → EFFECT_UNKNOWN (§B3 一致)', async () => {
+    const foreign = 'f'.repeat(64);
+    const result = await dispatchReview(
+      opts([
+        candidate(
+          'codex',
+          fixture(
+            'stale.sh',
+            `cat > /dev/null; echo "{\\"executed_agent\\":\\"codex\\",\\"route_id\\":\\"${foreign}\\"}"`,
+          ),
+        ),
+      ]),
+    );
+    expect(result.state).toBe('EFFECT_UNKNOWN');
+    expect(result.attempts[0]!.detail).toBe('receipt-mismatch');
+  });
+
+  it('rc=0 with MATCHING claimed route and attempt ids → COMPLETED', async () => {
+    const attemptId = computeAttemptId(ROUTE_ID, 'codex');
+    const result = await dispatchReview(
+      opts([
+        candidate(
+          'codex',
+          fixture(
+            'bound.sh',
+            `cat > /dev/null; echo "{\\"executed_agent\\":\\"codex\\",\\"route_id\\":\\"${ROUTE_ID}\\",\\"attempt_id\\":\\"${attemptId}\\"}"`,
+          ),
+        ),
+      ]),
+    );
+    expect(result.state).toBe('COMPLETED');
+    expect(result.actualExecutor).toBe('codex');
   });
 });
 

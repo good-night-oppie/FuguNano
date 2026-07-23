@@ -2,7 +2,12 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 
-import { appendOutcomeEvent, OUTCOME_LOG_FORMAT, type OutcomeEvent } from './outcome-log.js';
+import {
+  appendOutcomeEvent,
+  computeAttemptId,
+  OUTCOME_LOG_FORMAT,
+  type OutcomeEvent,
+} from './outcome-log.js';
 import type { CandidateConfig } from './routing-config.js';
 
 /**
@@ -71,6 +76,11 @@ export interface DispatchOptions {
   readonly ranked: ReadonlyArray<CandidateConfig>;
   /** Task JSON delivered on the agent's stdin. */
   readonly taskJson: string;
+  /**
+   * Per-candidate task JSON override (§B6: the payload embeds the per-attempt
+   * marker, so it varies with the candidate). Wins over taskJson when set.
+   */
+  readonly taskJsonFor?: (candidate: CandidateConfig) => string;
   readonly maxAttempts: number;
   readonly timeoutMs: number;
   /** Outcome-log path for the dispatch.terminal event; null skips emission (unit seams). */
@@ -212,7 +222,8 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
     if (tried.has(candidate.name)) continue; // same candidate max 1 try per route
     tried.add(candidate.name);
 
-    const outcome = await runCandidate(candidate, options.taskJson, options.timeoutMs);
+    const payload = options.taskJsonFor ? options.taskJsonFor(candidate) : options.taskJson;
+    const outcome = await runCandidate(candidate, payload, options.timeoutMs);
     attempts.push({ candidate: candidate.name, verdict: outcome.verdict, detail: outcome.detail });
 
     if (outcome.verdict === 'never-spawned') continue; // the ONLY fallback lane
@@ -225,9 +236,17 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
         parsed = null;
       }
       const isObject = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
-      const claimed = isObject ? (parsed as Record<string, unknown>)['executed_agent'] : undefined;
-      const consistent = isObject && (claimed === undefined || claimed === candidate.name);
-      if (isObject && consistent) {
+      const record: Record<string, unknown> = isObject ? (parsed as Record<string, unknown>) : {};
+      // §B3 COMPLETED requires route/attempt/executor 一致: every id the agent
+      // CLAIMS must match THIS dispatch; absent claims stay acceptable. A
+      // receipt bound to some other route is not evidence this task was done.
+      const executorOk =
+        record['executed_agent'] === undefined || record['executed_agent'] === candidate.name;
+      const routeOk = record['route_id'] === undefined || record['route_id'] === options.routeId;
+      const attemptOk =
+        record['attempt_id'] === undefined ||
+        record['attempt_id'] === computeAttemptId(options.routeId, candidate.name);
+      if (isObject && executorOk && routeOk && attemptOk) {
         emitTerminal(options, 'COMPLETED', candidate.name, attempts);
         return {
           state: 'COMPLETED',
@@ -242,7 +261,11 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
       attempts[attempts.length - 1] = {
         candidate: candidate.name,
         verdict: 'effect-unknown',
-        detail: isObject ? 'executor-mismatch' : 'unparseable-output',
+        detail: !isObject
+          ? 'unparseable-output'
+          : executorOk
+            ? 'receipt-mismatch'
+            : 'executor-mismatch',
       };
     }
 

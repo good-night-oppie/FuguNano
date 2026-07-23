@@ -28,6 +28,24 @@ export const die = (message) => {
   process.exit(2);
 };
 
+/**
+ * AgentDex auto-dispatch contract (frozen §B3/§D): the Python façade must
+ * always receive one machine-JSON object and a taxonomy exit code. A missing
+ * engine build is state trouble (74), never the caller's fault (2) and never
+ * bare prose. Returns true when the caller must exit 74.
+ */
+export const machineJsonEngineMissing = () => {
+  if (existsSync(engineCli())) return false;
+  console.log(
+    JSON.stringify({
+      format: 1,
+      status: "state_error",
+      reason: "engine CLI not built; run npm run build in engine/",
+    }),
+  );
+  return true;
+};
+
 export const runEngine = (args) => {
   const cli = engineCli();
   if (!existsSync(cli)) {

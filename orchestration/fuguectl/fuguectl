@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { runEngine } from "./fuguectl-node-bridge.mjs";
+import { machineJsonEngineMissing, runEngine } from "./fuguectl-node-bridge.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -21,6 +21,7 @@ const help = `fuguectl — fugue workflow control-plane entrypoint.
   fuguectl incident packet|recovery <file|-> [--json] [--source-ref ref]  parse failure logs into incident/recovery packets
   fuguectl template <n> [--set K=V]   render prompt template
   fuguectl dispatch <agent> [--harness fugue-cc|codex|opencode|agy] [--timeout-ms n] [--codex-clean] [--harness-arg x] [--out <file>] [--certificate <file> [--approval-class class] [--certificate-assumption text] [--certificate-externality fact]] [--require-output] [--verbose] [--workspace ws [--experience-query q] [--experience-source manual|task] [--experience-source-ref ref] [--experience-limit n] [--experience-budget-chars n] [--experience-trust trusted|all] [--experience-max-age-days n]] --template <n>|--prompt-file <f>|--prompt <text> [--task <file>] [--skeptic [--skeptic-file f]]
+  fuguectl dispatch --auto --task-type pr-review --policy-arm static|thompson [--json]  AgentDex routing seam: TaskProfile JSON on stdin, machine JSON on stdout (exit 0/2/7/8/74)
   fuguectl cache ...           result cache + join barrier
   fuguectl integrate --work <repo> --agents "a b" [--onconflict abort|skip]
   fuguectl allocate <task-type> [--top]|record|stats|reset
@@ -120,6 +121,9 @@ if (subcommand === "help" || subcommand === "-h" || subcommand === "--help") {
 } else if (subcommand === "selftest") {
   selftest();
 } else if (commandMap.has(subcommand)) {
+  if (subcommand === "dispatch" && rest.includes("--auto") && machineJsonEngineMissing()) {
+    process.exit(74);
+  }
   runEngine([commandMap.get(subcommand), ...rest]);
 } else {
   console.error(

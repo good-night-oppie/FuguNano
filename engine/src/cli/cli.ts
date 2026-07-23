@@ -9,6 +9,7 @@ import {
 } from './commands/agent-registry.js';
 import { AllocateCommand } from './commands/allocate.js';
 import { CacheCommand } from './commands/cache.js';
+import { DispatchAutoCommand } from './commands/dispatch-auto.js';
 import { DispatchCommand } from './commands/dispatch.js';
 import { DoctorCommand } from './commands/doctor.js';
 import {
@@ -78,6 +79,7 @@ export const buildCli = (): Cli => {
   cli.register(InitCommand);
   cli.register(AllocateCommand);
   cli.register(DispatchCommand);
+  cli.register(DispatchAutoCommand);
   cli.register(FleetCommand);
   cli.register(GuardPromptCommand);
   cli.register(ExperienceAddCommand);

@@ -70,12 +70,20 @@ describe('resolveConfigPath (R4-1 rules)', () => {
 
 describe('duplicate-key rejection before JSON.parse (R4-1 catch)', () => {
   it('rejects root-level duplicates that JSON.parse would silently last-win', () => {
-    expect(() => assertNoDuplicateKeys('{"a":1,"a":2}')).toThrow(/duplicate key "a"/);
+    expect(() => assertNoDuplicateKeys('{"a":1,"a":2}')).toThrow(/duplicate object key/);
+  });
+
+  it('compares keys DECODED: an escape-spelled twin cannot shadow a live key', () => {
+    // "\u0061" decodes to "a" — JSON.parse would last-win silently.
+    expect(() => assertNoDuplicateKeys('{"a":1,"\\u0061":2}')).toThrow(/duplicate object key/);
+    expect(() => assertNoDuplicateKeys('{"a\\tb":1,"a\tb":2}')).toThrow(/duplicate object key/);
+    // distinct decoded keys stay legal even when escape-spelled
+    expect(() => assertNoDuplicateKeys('{"a":1,"\\u0062":2}')).not.toThrow();
   });
 
   it('rejects duplicates at any depth', () => {
     expect(() => assertNoDuplicateKeys('{"outer":{"list":[{"x":1,"y":2,"x":3}]}}')).toThrow(
-      /duplicate key "x"/,
+      /duplicate object key/,
     );
   });
 
@@ -89,7 +97,7 @@ describe('duplicate-key rejection before JSON.parse (R4-1 catch)', () => {
     const poisoned = raw().replace('"static_priority":10', '"static_priority":10,"enabled":false');
     expect(poisoned).not.toBe(raw()); // replace must have matched
     // poisoned now has two "enabled" keys in candidate 0 once the original follows
-    expect(() => parseRoutingConfig(poisoned)).toThrow(/duplicate key "enabled"/);
+    expect(() => parseRoutingConfig(poisoned)).toThrow(/duplicate object key/);
   });
 });
 
