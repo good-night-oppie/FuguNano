@@ -1,11 +1,7 @@
 export const TASK_CONTEXT_DIGEST_SCHEMA_VERSION = 'fugunano.task-context-digest.v1';
 
 export type TaskContextDigestUnitKind =
-  | 'goal'
-  | 'requirement'
-  | 'open-subtask'
-  | 'handoff-object'
-  | 'recent-evidence';
+  'goal' | 'requirement' | 'open-subtask' | 'handoff-object' | 'recent-evidence';
 
 export interface TaskContextDigestUnit {
   readonly kind: TaskContextDigestUnitKind;
@@ -147,24 +143,18 @@ const allUnits = (
   maxEvidence: number,
 ): readonly TaskContextDigestUnit[] => [
   { kind: 'goal', text: `${heading.taskId}: ${heading.title} (status: ${status})` },
-  ...sectionItems(content, 'Requirements').map(
-    (text): TaskContextDigestUnit => ({
-      kind: 'requirement',
-      text,
-    }),
-  ),
-  ...openChecklistItems(content).map(
-    (text): TaskContextDigestUnit => ({
-      kind: 'open-subtask',
-      text,
-    }),
-  ),
-  ...sectionItems(content, 'Output files').map(
-    (text): TaskContextDigestUnit => ({
-      kind: 'handoff-object',
-      text,
-    }),
-  ),
+  ...sectionItems(content, 'Requirements').map((text): TaskContextDigestUnit => ({
+    kind: 'requirement',
+    text,
+  })),
+  ...openChecklistItems(content).map((text): TaskContextDigestUnit => ({
+    kind: 'open-subtask',
+    text,
+  })),
+  ...sectionItems(content, 'Output files').map((text): TaskContextDigestUnit => ({
+    kind: 'handoff-object',
+    text,
+  })),
   ...parseLogEvidence(content, maxEvidence),
 ];
 

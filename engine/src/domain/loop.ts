@@ -3,12 +3,7 @@ export type VerdictKind = 'ACCEPTED' | 'NEEDS_FIX';
 
 /** The one exit state `decide` resolves to each round (bounded review-fix loop, never hard-marks DONE). */
 export type LoopState =
-  | 'DONE'
-  | 'CONFIRM'
-  | 'CONTINUE'
-  | 'ASK_USER'
-  | 'ESCALATE_MAX'
-  | 'ESCALATE_NONCONV';
+  'DONE' | 'CONFIRM' | 'CONTINUE' | 'ASK_USER' | 'ESCALATE_MAX' | 'ESCALATE_NONCONV';
 
 /**
  * One recorded round of the review-fix loop. Mirrors the bash `loop` ledger so

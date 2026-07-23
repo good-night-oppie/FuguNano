@@ -10,13 +10,7 @@ import type { TaskHandoffPacket } from './task-handoff.js';
 export type EvolutionSurfaceHint = string;
 
 export type WeaknessSeverity =
-  | 'critical'
-  | 'major'
-  | 'minor'
-  | 'nit'
-  | 'warning'
-  | 'error'
-  | 'unknown';
+  'critical' | 'major' | 'minor' | 'nit' | 'warning' | 'error' | 'unknown';
 
 export interface WeaknessEvidenceLine {
   readonly line: number;
