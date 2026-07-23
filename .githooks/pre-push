@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Full local CI before anything leaves the machine — the same gate GitHub
+# Actions runs (scan, launcher lint, docs-drift, plugin/fuguectl tests,
+# engine typecheck+lint+tests). Install with: make hooks
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+make ci

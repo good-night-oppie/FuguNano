@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Tiny-PR gate: the FAST subset of `make ci`, so even a one-line commit is
+# CI-green on the first push. The full test suites run at pre-push.
+# Install with: make hooks
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-commit: secret scan"
+npm run --silent scan
+
+echo "pre-commit: launcher syntax"
+npm run --silent lint:launchers
+
+echo "pre-commit: docs-drift gate"
+npm run --silent check:docs
+
+# Engine checks scoped to what THIS commit touches (plus a whole-engine
+# typecheck, which is the cheapest whole-program guarantee we have).
+staged_engine_ts=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^engine/.*\.ts$' || true)
+if [[ -n "${staged_engine_ts}" ]]; then
+  echo "pre-commit: engine prettier/eslint on staged files + tsc"
+  rel=$(sed 's|^engine/||' <<<"${staged_engine_ts}")
+  (cd engine && xargs -r npx prettier --check <<<"${rel}")
+  (cd engine && xargs -r npx eslint <<<"${rel}")
+  (cd engine && npx tsc --noEmit)
+fi
+
+# Tiny-PR discipline notice (non-blocking): big diffs review badly.
+lines=$(git diff --cached --numstat | awk '{a+=$1+$2} END {print a+0}')
+if ((lines > 400)); then
+  echo "pre-commit notice: staged diff is ${lines} lines (>400) — consider splitting into smaller commits/PRs" >&2
+fi
+
+echo "pre-commit: OK"
