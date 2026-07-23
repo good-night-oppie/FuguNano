@@ -1,0 +1,214 @@
+import {
+  computeFinalId,
+  computeRouteId,
+  computeTaskId,
+  OutcomeLogError,
+  OUTCOME_LOG_FORMAT,
+  type OutcomeEvent,
+} from './outcome-log.js';
+import { parseRouteSeed, type PosteriorEntry } from './beta-sampler.js';
+
+/**
+ * Phase-aware routing plumbing for the AgentDex PR-review slice
+ * (frozen baseline 2026-07-23, §B2 learning rules + §C gate isolation).
+ *
+ * The posterior is never stored: it is re-folded from the unique
+ * `outcome.finalized` events of the single append-only log every time a
+ * routing decision needs it. With content-derived event ids upstream there is
+ * no mutable counter anywhere, so a retried sync cannot double-count — the
+ * live gate's "duplicate effect = 0" criterion is structural, not procedural.
+ *
+ * Learning rules (frozen):
+ *   VERIFIED_SUCCESS             → alpha += 1
+ *   NOT_VERIFIED_WITHIN_WINDOW   → beta  += 1
+ *   anything else                → no update
+ * Isolation rules (frozen):
+ *   - only routes decided under policy_arm="thompson" may update anything;
+ *     the fixed-order arm's outcomes are measurement, never training data;
+ *   - the update lands on the candidate that ACTUALLY executed (fallback
+ *     rule); a selected-but-never-started candidate learns nothing;
+ *   - a final event whose route.decided is missing from the log is
+ *     unattributable and learns nothing.
+ */
+
+export const POLICY_ARMS = ['static', 'thompson'] as const;
+export type PolicyArm = (typeof POLICY_ARMS)[number];
+
+export const TERMINAL_OUTCOMES = [
+  'VERIFIED_SUCCESS',
+  'NOT_VERIFIED_WITHIN_WINDOW',
+  'CENSORED',
+] as const;
+export type TerminalOutcome = (typeof TERMINAL_OUTCOMES)[number];
+
+export interface RouteDecidedInput {
+  readonly repo: string;
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly policyArm: PolicyArm;
+  readonly candidateId: string;
+  readonly rankedCandidates: ReadonlyArray<string>;
+  readonly seed: string;
+  readonly configSha256: string;
+  readonly routedAt: string;
+  readonly deadlineAt: string;
+}
+
+export interface OutcomeFinalizedInput {
+  readonly repo: string;
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly outcome: TerminalOutcome;
+  readonly reasonCode: string;
+  readonly actualExecutor: string | null;
+  readonly evidenceEventIds: ReadonlyArray<string>;
+  readonly verifiedAt: string | null;
+  readonly observedAt: string;
+}
+
+const assertNonEmpty = (value: string, name: string): void => {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new OutcomeLogError('INVALID_EVENT', `${name} required`);
+  }
+};
+
+/** Build a `route.decided` event; policy arm and replay seed are mandatory. */
+export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
+  if (!POLICY_ARMS.includes(input.policyArm)) {
+    throw new OutcomeLogError('INVALID_EVENT', `unknown policy_arm ${String(input.policyArm)}`);
+  }
+  assertNonEmpty(input.candidateId, 'candidateId');
+  assertNonEmpty(input.configSha256, 'configSha256');
+  assertNonEmpty(input.routedAt, 'routedAt');
+  assertNonEmpty(input.deadlineAt, 'deadlineAt');
+  const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
+  const routeId = computeRouteId(taskId);
+  return {
+    format: OUTCOME_LOG_FORMAT,
+    event_type: 'route.decided',
+    event_id: routeId,
+    route_id: routeId,
+    observed_at: input.routedAt,
+    task_id: taskId,
+    repo: input.repo,
+    pr_number: input.prNumber,
+    head_sha_at_route: input.headSha,
+    policy_arm: input.policyArm,
+    candidate_id: input.candidateId,
+    ranked_candidates: [...input.rankedCandidates],
+    seed: parseRouteSeed(input.seed),
+    config_sha256: input.configSha256,
+    routed_at: input.routedAt,
+    deadline_at: input.deadlineAt,
+  };
+};
+
+/** Build an `outcome.finalized` event; exactly one per route by construction. */
+export const buildOutcomeFinalized = (input: OutcomeFinalizedInput): OutcomeEvent => {
+  if (!TERMINAL_OUTCOMES.includes(input.outcome)) {
+    throw new OutcomeLogError('INVALID_EVENT', `unknown outcome ${String(input.outcome)}`);
+  }
+  assertNonEmpty(input.reasonCode, 'reasonCode');
+  const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
+  const routeId = computeRouteId(taskId);
+  return {
+    format: OUTCOME_LOG_FORMAT,
+    event_type: 'outcome.finalized',
+    event_id: computeFinalId(routeId),
+    route_id: routeId,
+    observed_at: input.observedAt,
+    task_id: taskId,
+    outcome: input.outcome,
+    reason_code: input.reasonCode,
+    actual_executor: input.actualExecutor,
+    evidence_event_ids: [...input.evidenceEventIds],
+    verified_at: input.verifiedAt,
+  };
+};
+
+export interface FoldDiagnostics {
+  /** Updates applied to the posterior. */
+  readonly applied: number;
+  /** Blocked: route ran under the fixed-order arm. */
+  readonly blockedStaticArm: number;
+  /** Blocked: no attributable executor, or no matching route.decided. */
+  readonly blockedUnattributable: number;
+  /** Blocked: outcome carries no learning signal (e.g. CENSORED). */
+  readonly blockedNoSignal: number;
+}
+
+export interface FoldResult {
+  readonly posteriors: ReadonlyArray<PosteriorEntry>;
+  readonly diagnostics: FoldDiagnostics;
+}
+
+/**
+ * Re-fold candidate posteriors from the event stream. `candidateIds` fixes
+ * the universe (and output order — callers pass the frozen canonical order);
+ * every candidate starts at the Beta(1,1) prior. Events are deduplicated by
+ * event_id defensively even though the store already enforces uniqueness.
+ */
+export const foldPosteriors = (
+  events: ReadonlyArray<OutcomeEvent>,
+  candidateIds: ReadonlyArray<string>,
+): FoldResult => {
+  const armByRoute = new Map<string, PolicyArm>();
+  for (const event of events) {
+    if (event.event_type === 'route.decided') {
+      const arm = event['policy_arm'];
+      if (arm === 'static' || arm === 'thompson') armByRoute.set(event.route_id, arm);
+    }
+  }
+
+  const counts = new Map<string, { alpha: number; beta: number }>(
+    candidateIds.map((id) => [id, { alpha: 1, beta: 1 }]),
+  );
+
+  let applied = 0;
+  let blockedStaticArm = 0;
+  let blockedUnattributable = 0;
+  let blockedNoSignal = 0;
+
+  const seenFinalIds = new Set<string>();
+  for (const event of events) {
+    if (event.event_type !== 'outcome.finalized') continue;
+    if (seenFinalIds.has(event.event_id)) continue;
+    seenFinalIds.add(event.event_id);
+
+    const outcome = event['outcome'];
+    const learns = outcome === 'VERIFIED_SUCCESS' || outcome === 'NOT_VERIFIED_WITHIN_WINDOW';
+    if (!learns) {
+      blockedNoSignal += 1;
+      continue;
+    }
+
+    const arm = armByRoute.get(event.route_id);
+    if (arm === undefined) {
+      blockedUnattributable += 1;
+      continue;
+    }
+    if (arm !== 'thompson') {
+      blockedStaticArm += 1;
+      continue;
+    }
+
+    const executor = event['actual_executor'];
+    const bucket = typeof executor === 'string' ? counts.get(executor) : undefined;
+    if (!bucket) {
+      blockedUnattributable += 1;
+      continue;
+    }
+
+    if (outcome === 'VERIFIED_SUCCESS') bucket.alpha += 1;
+    else bucket.beta += 1;
+    applied += 1;
+  }
+
+  return {
+    posteriors: candidateIds.map((id) => {
+      const c = counts.get(id)!;
+      return { candidateId: id, alpha: c.alpha, beta: c.beta };
+    }),
+    diagnostics: { applied, blockedStaticArm, blockedUnattributable, blockedNoSignal },
+  };
+};
