@@ -65,12 +65,24 @@ export const canonicalOrder = (
       (Buffer.from(a.name, 'utf8') < Buffer.from(b.name, 'utf8') ? -1 : 1),
   );
 
-/** Apply the eligibility rules; result keeps canonical order. */
+/**
+ * Apply the eligibility rules; result keeps canonical order.
+ *
+ * Coverage is vacuous on an EMPTY needs list by design: a zero-risk-tag PR
+ * requires no `risk:` token (the frozen §B5 wording — "every language/risk
+ * covered" — is satisfied by zero of them). Languages, by contrast, are
+ * never empty on the production path (task-profile enforces ≥1), so an
+ * empty list here is a caller bug and fails loudly rather than
+ * vacuous-passing the language filter.
+ */
 export const eligibleReviewers = (
   candidates: ReadonlyArray<CandidateConfig>,
   task: ReviewTaskFacts,
-): ReadonlyArray<CandidateConfig> =>
-  canonicalOrder(candidates).filter(
+): ReadonlyArray<CandidateConfig> => {
+  if (task.languages.length === 0) {
+    throw new OutcomeLogError('INVALID_EVENT', 'eligibleReviewers requires ≥1 task language');
+  }
+  return canonicalOrder(candidates).filter(
     (candidate) =>
       candidate.enabled &&
       candidate.capabilities.includes('pr-review') &&
@@ -78,11 +90,12 @@ export const eligibleReviewers = (
       covered(task.languages, candidate.capabilities, 'lang') &&
       covered(task.riskTags, candidate.capabilities, 'risk'),
   );
+};
 
 const explain = (name: string, arm: PolicyArm): string =>
   arm === 'thompson'
     ? `Selected ${name} because it was eligible and ranked first under Thompson sampling for this PR.`
-    : `Selected ${name} because it was eligible and holds the highest fixed priority.`;
+    : `Selected ${name} because it was eligible and holds the best fixed priority (lowest number wins).`;
 
 /**
  * Rank the eligible pool. Static: canonical order as-is. Thompson: fold the

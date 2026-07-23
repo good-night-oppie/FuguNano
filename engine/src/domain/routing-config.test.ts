@@ -144,6 +144,31 @@ describe('schema validation — fail closed', () => {
     ['relative argv[0]', candidateMutant((c) => (c['argv'] = ['bin/review'])), /absolute path/],
     ['empty argv', candidateMutant((c) => (c['argv'] = [])), /non-empty array/],
     ['empty capabilities', candidateMutant((c) => (c['capabilities'] = [])), /non-empty array/],
+    [
+      'free-form lineage alias (ER-1)',
+      candidateMutant((c) => (c['lineage'] = 'claude-code')),
+      /known worker family/,
+    ],
+    [
+      'miscased capability token (ER-2)',
+      candidateMutant((c) => (c['capabilities'] = ['pr-review', 'lang:Python', 'risk:*'])),
+      /not a known capability token/,
+    ],
+    [
+      'misspelled capability token (ER-2)',
+      candidateMutant((c) => (c['capabilities'] = ['pr-review', 'lang:pyton', 'risk:*'])),
+      /not a known capability token/,
+    ],
+    [
+      'unknown capability namespace (ER-2)',
+      candidateMutant((c) => (c['capabilities'] = ['pr-review', 'bug-triage'])),
+      /not a known capability token/,
+    ],
+    [
+      'missing pr-review capability (ER-2)',
+      candidateMutant((c) => (c['capabilities'] = ['lang:*', 'risk:*'])),
+      /must include pr-review/,
+    ],
     ['non-boolean enabled', candidateMutant((c) => (c['enabled'] = 'yes')), /boolean/],
     ['zero priority', candidateMutant((c) => (c['static_priority'] = 0)), /positive integer/],
   ])('rejects %s', (_label, mutate, pattern) => {

@@ -98,7 +98,7 @@ describe('static rank', () => {
     const result = rankReviewers(POOL, 'static');
     expect(result.ranked[0]!.name).toBe('codex');
     expect(result.reason).toBe(
-      'Selected codex because it was eligible and holds the highest fixed priority.',
+      'Selected codex because it was eligible and holds the best fixed priority (lowest number wins).',
     );
   });
 });
@@ -148,6 +148,39 @@ describe('thompson rank', () => {
       if (r.ranked[0]!.name === 'gemini') geminiFirst += 1;
     }
     expect(geminiFirst).toBeGreaterThanOrEqual(17);
+  });
+
+  it('empty task languages fail loudly instead of vacuous-passing the lang filter (ER-5)', () => {
+    expect(() =>
+      eligibleReviewers(POOL, { authorLineage: 'human:alice', languages: [], riskTags: [] }),
+    ).toThrow(/requires ≥1 task language/);
+  });
+
+  it('empty risk_tags vacuously pass risk coverage BY DESIGN (ER-4, §B5 wording)', () => {
+    const noRiskCap = [
+      {
+        name: 'codex',
+        argv: ['/bin/x'],
+        lineage: 'codex',
+        capabilities: ['pr-review', 'lang:*'],
+        static_priority: 10,
+        enabled: true,
+      },
+    ];
+    expect(
+      eligibleReviewers(noRiskCap, {
+        authorLineage: 'human:alice',
+        languages: ['python'],
+        riskTags: [],
+      }),
+    ).toHaveLength(1);
+    expect(
+      eligibleReviewers(noRiskCap, {
+        authorLineage: 'human:alice',
+        languages: ['python'],
+        riskTags: ['ci_config'],
+      }),
+    ).toHaveLength(0);
   });
 
   it('no hidden state in the reason — no numbers, no samples', () => {

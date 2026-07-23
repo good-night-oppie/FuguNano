@@ -55,6 +55,16 @@ describe('parseTaskProfile', () => {
     }
   });
 
+  it('author_lineage: human:<login> or a closed worker family — aliases refused (ER-1)', () => {
+    expect(parseTaskProfile(profile({ author_lineage: 'claude' })).authorLineage).toBe('claude');
+    expect(parseTaskProfile(profile({ author_lineage: 'human:bob' })).authorLineage).toBe(
+      'human:bob',
+    );
+    for (const bad of ['claude-code', 'robot', 'human:', 'CODEX']) {
+      expect(() => parseTaskProfile(profile({ author_lineage: bad }))).toThrow(/author_lineage/);
+    }
+  });
+
   it('pr must be a positive integer, head_sha 40 lowercase hex', () => {
     for (const bad of [0, -1, 1.5, '7']) {
       expect(() => parseTaskProfile(profile({ pr: bad }))).toThrow(/pr/);

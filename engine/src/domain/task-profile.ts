@@ -1,5 +1,14 @@
 import { OutcomeLogError } from './outcome-log.js';
+import {
+  CANONICAL_LANGUAGES,
+  RISK_TAGS,
+  WORKER_LINEAGES,
+  type CanonicalLanguage,
+  type RiskTag,
+} from './review-vocab.js';
 import { assertNoDuplicateKeys } from './routing-config.js';
+
+export { CANONICAL_LANGUAGES, RISK_TAGS, type CanonicalLanguage, type RiskTag };
 
 /**
  * Frozen 7-field TaskProfile for the AgentDex PR-review slice
@@ -16,45 +25,6 @@ import { assertNoDuplicateKeys } from './routing-config.js';
  * trips the credential-shape scan, so even a key spelled like a token
  * cannot reach stdout or a log line.
  */
-
-export const CANONICAL_LANGUAGES = [
-  'python',
-  'typescript',
-  'javascript',
-  'rust',
-  'go',
-  'java',
-  'kotlin',
-  'swift',
-  'csharp',
-  'c',
-  'cpp',
-  'ruby',
-  'php',
-  'scala',
-  'shell',
-  'sql',
-  'terraform',
-  'protobuf',
-  'config',
-  'docs',
-  'other',
-] as const;
-export type CanonicalLanguage = (typeof CANONICAL_LANGUAGES)[number];
-
-export const RISK_TAGS = [
-  'auth_security',
-  'database_migration',
-  'ci_config',
-  'dependency_change',
-  'infrastructure',
-  'public_api',
-  'generated_vendor',
-  'large_diff',
-  'binary_diff',
-  'unknown_language',
-] as const;
-export type RiskTag = (typeof RISK_TAGS)[number];
 
 const PROFILE_FIELDS = new Set([
   'repo',
@@ -147,6 +117,14 @@ export const parseTaskProfile = (raw: string): TaskProfile => {
     CONTROL_RE.test(authorLineage)
   ) {
     throw invalid('author_lineage must be a non-empty printable string');
+  }
+  // Closed at both ends (see review-vocab.ts): a façade emitting an alias
+  // like `claude-code` would defeat the exact-inequality same-lineage filter,
+  // so anything that is neither `human:<login>` nor a family token is
+  // refused here rather than silently passing eligibility.
+  const isHuman = authorLineage.startsWith('human:') && authorLineage.length > 'human:'.length;
+  if (!isHuman && !(WORKER_LINEAGES as ReadonlyArray<string>).includes(authorLineage)) {
+    throw invalid('author_lineage must be human:<login> or a known worker family');
   }
 
   const languages = requireUniqueStrings(record['languages'], 'languages');

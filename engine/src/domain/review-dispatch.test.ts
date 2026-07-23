@@ -104,7 +104,8 @@ describe('hot path', () => {
       selected_agent: 'codex',
       executed_agent: 'codex',
       attempt_id: computeAttemptId(ROUTE_ID, 'codex'),
-      reason: 'Selected codex because it was eligible and holds the highest fixed priority.',
+      reason:
+        'Selected codex because it was eligible and holds the best fixed priority (lowest number wins).',
       result_ref: 'gh-review-codex',
     });
     const log = readOutcomeLog(logPath);
@@ -190,10 +191,11 @@ describe('frozen failure taxonomy', () => {
   });
 
   it('no eligible candidate (same lineage) → exit 7, frozen sentence, NO route created', async () => {
+    // A claude-family-authored PR with only a claude-family reviewer on file.
     writeConfig([
-      { name: 'codex', argv: [fixture('z.sh', okScript('codex'))], lineage: 'human:alice' },
+      { name: 'claude-code', argv: [fixture('z.sh', okScript('claude-code'))], lineage: 'claude' },
     ]);
-    const { machine, exitCode } = await run();
+    const { machine, exitCode } = await run({ ...PROFILE, author_lineage: 'claude' });
     expect(exitCode).toBe(7);
     expect(machine['status']).toBe('no_eligible_agent');
     expect(machine['reason']).toBe(

@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { OutcomeLogError } from './outcome-log.js';
+import { isValidCapability, WORKER_LINEAGES } from './review-vocab.js';
 
 /**
  * Plain-JSON routing config for the AgentDex PR-review slice
@@ -204,6 +205,11 @@ const validateCandidate = (value: unknown, index: number): CandidateConfig => {
   }
   const name = requireNonEmptyString(record['name'], `candidates[${index}].name`);
   const lineage = requireNonEmptyString(record['lineage'], `candidates[${index}].lineage`);
+  // Closed family vocabulary (see review-vocab.ts): a free-form lineage like
+  // `claude-code` would defeat the frozen exact-inequality self-review filter.
+  if (!(WORKER_LINEAGES as ReadonlyArray<string>).includes(lineage)) {
+    throw invalid(`candidates[${index}].lineage must be a known worker family`);
+  }
   const argv = record['argv'];
   if (!Array.isArray(argv) || argv.length === 0) {
     throw invalid(`candidates[${index}].argv must be a non-empty array`);
@@ -221,6 +227,17 @@ const validateCandidate = (value: unknown, index: number): CandidateConfig => {
   const capStrings = capabilities.map((item, j) =>
     requireNonEmptyString(item, `candidates[${index}].capabilities[${j}]`),
   );
+  // Tokens are validated against the closed enums: `lang:Python` or
+  // `lang:pyton` would otherwise never match a (lowercase, closed) profile
+  // language and silently narrow the pool to NO_ELIGIBLE_AGENT.
+  capStrings.forEach((token, j) => {
+    if (!isValidCapability(token)) {
+      throw invalid(`candidates[${index}].capabilities[${j}] is not a known capability token`);
+    }
+  });
+  if (!capStrings.includes('pr-review')) {
+    throw invalid(`candidates[${index}].capabilities must include pr-review`);
+  }
   const staticPriority = requirePositiveInteger(
     record['static_priority'],
     `candidates[${index}].static_priority`,
