@@ -28,3 +28,10 @@ reports/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# ── editor / agent-tool local state — never tracked ──
+.cursor/
+.cursorindexingignore
+.specstory/
+.serena/
+.vscode/
