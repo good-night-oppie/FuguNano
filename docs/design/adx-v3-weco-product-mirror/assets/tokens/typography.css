@@ -1,0 +1,77 @@
+/* ============================================================
+   AgentDex · Typography system
+   Display: Chakra Petch  — game-grade geometric sans, compact
+   Mono:    IBM Plex Mono — the data/trace/code voice
+   Serif:   Bitter        — Patagonia editorial italic moments
+   ============================================================ */
+
+:root {
+  /* ── Families ── */
+  /* CJK face trails every UI/display stack so mixed EN/ZH runs render
+     cohesively without per-span font switching. */
+  --font-zh:      'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-display: 'Chakra Petch', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono:    'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, 'Noto Sans SC', monospace;
+  --font-serif:   'Bitter', Georgia, 'Times New Roman', 'Noto Sans SC', serif;
+
+  /* default UI font */
+  --font-ui: var(--font-display);
+
+  /* ── Weights ── */
+  --fw-regular: 400; /* @kind font */
+  --fw-medium:  500; /* @kind font */
+  --fw-semi:    600; /* @kind font */
+  --fw-bold:    700; /* @kind font */
+
+  /* ── Type scale (px) ── */
+  --fs-9:   9px;    /* micro labels, status pills          */
+  --fs-10: 10px;    /* eyebrow / section headers (mono)     */
+  --fs-11: 11px;    /* meta, chips, stat names              */
+  --fs-12: 12px;    /* dense data, log lines                */
+  --fs-13: 13px;    /* base UI text                         */
+  --fs-14: 14px;    /* card titles, agent names             */
+  --fs-16: 16px;    /* prose body                           */
+  --fs-18: 18px;    /* pane headings                        */
+  --fs-22: 22px;    /* sub-display                          */
+  --fs-28: 28px;    /* display                              */
+  --fs-36: 36px;    /* hero display                         */
+  --fs-48: 48px;    /* big editorial                        */
+  --fs-60: 60px;    /* landing hero                         */
+
+  /* ── Line heights ── */
+  --lh-tight:  1.1;   /* @kind font */
+  --lh-snug:   1.3;   /* @kind font */
+  --lh-normal: 1.45;  /* @kind font */
+  --lh-prose:  1.7;   /* @kind font */
+  --lh-loose:  1.8;   /* @kind font */
+
+  /* ── Letter spacing ── */
+  --ls-eyebrow: .14em;   /* uppercase mono section headers   @kind font */
+  --ls-label:   .1em;    /* uppercase labels                 @kind font */
+  --ls-tight:  -.02em;   /* large display                    @kind font */
+  --ls-snug:   -.01em;   /* @kind font */
+
+  /* ============================================================
+     SEMANTIC TEXT ROLES
+     ============================================================ */
+  /* eyebrow / section header — uppercase mono, used everywhere */
+  --text-eyebrow-font:    var(--font-mono);
+  --text-eyebrow-size:    var(--fs-10);
+  --text-eyebrow-spacing: var(--ls-eyebrow);
+
+  /* display / headings */
+  --text-display-font: var(--font-display);
+  --text-display-weight: var(--fw-bold);
+
+  /* body prose */
+  --text-prose-font: var(--font-serif);
+  --text-prose-size: var(--fs-16);
+  --text-prose-leading: var(--lh-prose);
+
+  /* data / numeric */
+  --text-data-font: var(--font-mono);
+
+  /* editorial flavor (evolution quotes, gym-badge captions) */
+  --text-flavor-font:  var(--font-serif);
+  --text-flavor-style: italic;
+}

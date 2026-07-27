@@ -1,0 +1,165 @@
+/* ============================================================
+   AgentDex · Color system  ·  POKÉDEX TERMINAL × PATAGONIA PAPER
+   ------------------------------------------------------------
+   TWO THEMES, ONE BRAND:
+   • :root                  → DARK  "stadium" (the live Arena)
+   • [data-theme="light"]   → LIGHT "Patagonia paper" (marketing,
+                              ladder, docs — warm sand, earth-anchored)
+   Components read SEMANTIC aliases (--surface-card, --text-accent…)
+   so they flip automatically. Base hue tokens (--lime, --rust…)
+   stay constant; only their AS-TEXT companions (--accent-ink…) and
+   the surface/ink ramps change per theme.
+   Set the theme on <html data-theme="light"> (default = dark).
+   ============================================================ */
+
+:root {
+  /* ── Stadium base / surfaces (warm-cool dark, layered) ── */
+  --bg:        #0B0D10;   /* app background — the stadium void */
+  --surface:   #12151D;   /* primary panel / card surface     */
+  --surface-2: #181D29;   /* raised cell inside a panel        */
+  --surface-3: #1E2335;   /* header strips, hover wells        */
+  --surface-sunken: #0D1016; /* inset wells (trace, ticker)    */
+
+  /* ── Hairlines ── */
+  --line:   #232A3A;      /* default divider / card border     */
+  --line-2: #2E3750;      /* stronger border, hover edge       */
+
+  /* ── Ink (cool-gray text ramp) ── */
+  --ink:   #E8EDF5;       /* primary text, headings            */
+  --ink-2: #9BA5B8;       /* secondary / body                  */
+  --mut:   #606B80;       /* muted labels, meta                */
+  --dim:   #404858;       /* faint, disabled, axis             */
+
+  /* ── Energetic accent triad + signals (CONSTANT across themes) ── */
+  --lime:  #A6E22E;       /* PRIMARY accent — active/live/healthy/win-con */
+  --rust:  #C84B2C;       /* Patagonia earth — damage, side-B ember        */
+  --gold:  #F4B731;       /* winner / Pareto-front / caution highlight     */
+  --blue:  #4A9EF5;       /* data, reasoning, side-A electric              */
+  --live:  #FF4655;       /* live ●, fainted, critical blocker             */
+  --purple:#9B59B6;       /* system / meta tag                              */
+
+  /* ── Accent-AS-TEXT companions (legible on the active surface) ──
+     In dark these equal the bright hue; light overrides them deeper. */
+  --accent-ink: var(--lime);
+  --rust-ink:   var(--rust);
+  --gold-ink:   var(--gold);
+  --blue-ink:   var(--blue);
+  --live-ink:   var(--live);
+
+  /* soft accent washes (low-alpha backgrounds) */
+  --lime-soft: rgba(166,226,46,.12);
+  --rust-soft: rgba(200,75,44,.10);
+  --gold-soft: rgba(244,183,49,.10);
+  --blue-soft: rgba(74,158,245,.10);
+  --live-soft: rgba(255,70,85,.08);
+
+  /* ── HP trichrome (Pokémon convention) ── */
+  --hp-ok:   #5FD35A;     /* green  · healthy   */
+  --hp-warn: #F4C531;     /* amber  · status    */
+  --hp-low:  #EF4A4A;     /* red    · fainting  */
+
+  /* ── Pokémon TYPE palette — agent type coding (CONSTANT) ── */
+  --t-normal:   #8A8A5A;
+  --t-fire:     #E8703A;
+  --t-water:    #5590E0;
+  --t-grass:    #6BBF42;
+  --t-electric: #E8C840;
+  --t-ice:      #98D8D8;
+  --t-fighting: #C03028;
+  --t-poison:   #A040A0;
+  --t-ground:   #D8B048;
+  --t-flying:   #9AA8F0;
+  --t-psychic:  #E05888;
+  --t-bug:      #A8B820;
+  --t-rock:     #B8A038;
+  --t-ghost:    #6650A4;
+  --t-dragon:   #6830E8;
+  --t-dark:     #685242;
+  --t-steel:    #8888AA;
+  --t-fairy:    #E898E8;
+
+  /* ── Biome backgrounds (Patagonia earth anchors — always dark;
+        the battle stadium stays dark even under the light theme) ── */
+  --biome-forest:   linear-gradient(180deg, #0A1A28 0%, #0D1A10 45%, #0A1208 100%); /* @kind other */
+  --biome-volcanic: linear-gradient(180deg, #1A0A08 0%, #280E08 45%, #1A0800 100%); /* @kind other */
+  --biome-cave:     linear-gradient(180deg, #0A0A1A 0%, #0A1018 45%, #080A10 100%); /* @kind other */
+
+  /* ============================================================
+     SEMANTIC ALIASES — prefer these in components
+     ============================================================ */
+  --text-strong:   var(--ink);
+  --text-body:     var(--ink-2);
+  --text-muted:    var(--mut);
+  --text-faint:    var(--dim);
+  --text-accent:   var(--accent-ink);
+  --text-data:     var(--blue-ink);
+  --text-winner:   var(--gold-ink);
+  --text-danger:   var(--live-ink);
+
+  --surface-app:   var(--bg);
+  --surface-card:  var(--surface);
+  --surface-raised:var(--surface-2);
+  --surface-header:var(--surface-3);
+  --surface-well:  var(--surface-sunken);
+
+  --border-default:var(--line);
+  --border-strong: var(--line-2);
+  --border-active: var(--lime);
+
+  --accent-primary: var(--lime);   /* the brand signal accent (fills/borders) */
+  --on-accent:      #0B0D10;       /* text/icon ON a lime fill                */
+  --accent-winner:  var(--gold);   /* victory / top-of-ladder        */
+  --accent-side-a:  var(--blue);   /* "your" / electric side         */
+  --accent-side-b:  var(--rust);   /* "their" / ember side           */
+  --accent-danger:  var(--live);   /* fainted / live / critical      */
+
+  /* status conventions */
+  --status-healthy: var(--hp-ok);
+  --status-status:  var(--hp-warn);
+  --status-fainted: var(--hp-low);
+}
+
+/* ============================================================
+   LIGHT THEME · PATAGONIA PAPER
+   Warm sand paper, earth-anchored neutrals, deepened accents
+   for legibility. The stadium (battle scene) stays dark.
+   ============================================================ */
+[data-theme="light"] {
+  /* warm paper surfaces — like a field-guide page */
+  --bg:        #EDE7DB;   /* warm sand paper                   */
+  --surface:   #F8F4EC;   /* card paper (lighter than bg)      */
+  --surface-2: #E5DECF;   /* raised cell                       */
+  --surface-3: #DCD3C1;   /* header strips                     */
+  --surface-sunken: #E3DCCD; /* inset wells                    */
+
+  --line:   #D6CDBA;      /* warm hairline                     */
+  --line-2: #C2B69E;      /* stronger border                   */
+
+  /* warm near-black ink ramp */
+  --ink:   #1C1A15;       /* primary text                      */
+  --ink-2: #4C463B;       /* body                              */
+  --mut:   #82796A;       /* muted labels                      */
+  --dim:   #A89E8B;       /* faint / axis                      */
+
+  /* accent-as-text companions, deepened to sit on paper */
+  --accent-ink: #4F7A0E;  /* deep olive-lime (lime is illegible on paper) */
+  --rust-ink:   #B23E20;  /* ember earth                       */
+  --gold-ink:   #9A6E00;  /* burnt amber                       */
+  --blue-ink:   #2563C9;  /* deepened electric                 */
+  --live-ink:   #D32238;  /* deepened live/critical            */
+
+  /* soft washes re-tuned for paper */
+  --lime-soft: rgba(122,160,30,.16);
+  --rust-soft: rgba(178,62,32,.12);
+  --gold-soft: rgba(154,110,0,.12);
+  --blue-soft: rgba(37,99,201,.10);
+  --live-soft: rgba(211,34,56,.09);
+
+  /* on-paper, a lime fill still wants dark ink (lime stays bright) */
+  --on-accent: #15240A;
+
+  /* HP fills stay vivid but the ok-green darkens a touch for paper contrast */
+  --hp-ok:   #4FB04A;
+  --hp-warn: #D69A12;
+  --hp-low:  #DD3636;
+}

@@ -1,0 +1,792 @@
+<!--
+  ADX-v3 Reviewer Lab — Huashu junior/full pass combined.
+
+  Assumptions:
+  1. This is a design-review prototype, not deployed product UI.
+  2. Managed-lineage parentage and promotion states are labeled DEMO FIXTURE.
+  3. Imported sequence uses real local snapshot bytes and 2026-07-26 recomputation;
+     it never claims to recover historical Weco metrics or genealogy.
+  4. FuguNano remains the only online routing/dispatch/learning authority.
+  5. Authenticated Weco visuals remain pending; this is AgentDex-native design.
+
+  Narrative role: product-design proof / operating model review.
+  Viewing distance: 1m laptop, with responsive support down to tablet/mobile.
+  Visual temperature: controlled, technical, high-trust.
+  Density: intentionally high; progressive disclosure lives in the inspector.
+-->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ADX-v3 Reviewer Lab · Weco Product-Mirror Review</title>
+  <link rel="icon" href="assets/agentdex-mark.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="assets/agentdex-styles.css" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background:
+        radial-gradient(circle at 82% -12%, rgba(74,158,245,.13), transparent 34rem),
+        radial-gradient(circle at 12% 108%, rgba(166,226,46,.07), transparent 32rem),
+        var(--surface-app);
+      color: var(--text-strong);
+      font-family: var(--font-ui);
+      font-size: 13px;
+    }
+    button, select { font: inherit; }
+    button { color: inherit; }
+    a { color: var(--text-data); }
+    .app { min-height: 100vh; display: flex; flex-direction: column; }
+    .topbar {
+      height: 58px;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto auto;
+      align-items: center;
+      gap: 18px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--border-default);
+      background: color-mix(in srgb, var(--surface-app) 88%, transparent);
+      backdrop-filter: blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .brand img.mark { width: 28px; height: 28px; }
+    .brand-lockup { min-width: 0; }
+    .brand-title {
+      font: 700 17px/1 var(--font-display);
+      letter-spacing: -.02em;
+      white-space: nowrap;
+    }
+    .brand-sub {
+      margin-top: 4px;
+      color: var(--text-muted);
+      font: 10px/1 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .source-lockup {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-sm);
+      color: var(--text-muted);
+      font: 10px/1 var(--font-mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .source-lockup img { height: 14px; max-width: 46px; filter: grayscale(1); opacity: .74; }
+    .controls { display: flex; align-items: center; gap: 8px; }
+    .icon-btn, .quiet-btn, .primary-btn, .danger-btn {
+      border: 1px solid var(--border-default);
+      background: var(--surface-card);
+      border-radius: var(--r-sm);
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: transform var(--dur-1) var(--ease-snap), border-color var(--dur-1) var(--ease-snap), background var(--dur-1) var(--ease-snap);
+    }
+    .icon-btn:hover, .quiet-btn:hover { transform: translateY(-1px); border-color: var(--border-strong); }
+    .primary-btn { background: var(--accent-primary); color: var(--on-accent); border-color: var(--accent-primary); font-weight: 700; }
+    .danger-btn { border-color: var(--accent-danger); color: var(--text-danger); background: var(--live-soft); }
+    .primary-btn:disabled, .quiet-btn:disabled, .danger-btn:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+    .trust-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-bottom: 1px solid var(--border-default);
+      background: var(--surface-well);
+    }
+    .trust-item { padding: 9px 16px; border-right: 1px solid var(--border-default); min-width: 0; }
+    .trust-item:last-child { border-right: 0; }
+    .eyebrow { color: var(--text-muted); font: 9px/1.2 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+    .trust-value { margin-top: 4px; font: 600 11px/1.2 var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .trust-value.good { color: var(--text-accent); }
+    .trust-value.data { color: var(--text-data); }
+    .trust-value.warn { color: var(--text-winner); }
+    .review-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 10px 16px 0;
+      border-bottom: 1px solid var(--border-default);
+      background: var(--surface-app);
+    }
+    .review-tab {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      padding: 10px 14px 11px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font: 600 12px/1 var(--font-mono);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .review-tab[aria-selected="true"] { color: var(--text-strong); border-bottom-color: var(--accent-primary); }
+    .workspace {
+      display: grid;
+      grid-template-columns: 220px minmax(520px, 1fr) 340px;
+      min-height: calc(100vh - 157px);
+    }
+    .context-rail, .inspector { background: color-mix(in srgb, var(--surface-card) 92%, transparent); }
+    .context-rail { border-right: 1px solid var(--border-default); padding: 16px; }
+    .inspector { border-left: 1px solid var(--border-default); min-width: 0; }
+    .canvas { min-width: 0; padding: 18px; overflow: auto; }
+    .rail-section + .rail-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border-default); }
+    .rail-title { margin: 7px 0 5px; font-size: 16px; line-height: 1.2; }
+    .rail-copy { color: var(--text-body); font-size: 12px; line-height: 1.55; }
+    .meta-list { display: grid; gap: 9px; margin-top: 12px; }
+    .meta-row { display: grid; gap: 3px; }
+    .meta-value { font: 11px/1.35 var(--font-mono); color: var(--text-body); overflow-wrap: anywhere; }
+    .status-key { display: grid; grid-template-columns: 14px 1fr; gap: 8px; align-items: center; margin-top: 9px; color: var(--text-body); font: 11px/1.3 var(--font-mono); }
+    .status-symbol { display: grid; place-items: center; width: 13px; height: 13px; font-size: 10px; border: 1px solid currentColor; }
+    .status-symbol.round { border-radius: 50%; }
+    .status-symbol.diamond { transform: rotate(45deg); }
+    .status-symbol.diamond > span { transform: rotate(-45deg); }
+    .key-baseline { color: var(--text-muted); }
+    .key-active { color: var(--text-accent); }
+    .key-best { color: var(--text-winner); }
+    .key-failed { color: var(--rust-ink); }
+    .key-unknown { color: var(--text-danger); }
+    .provenance-chip, .status-chip, .concept-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 20px;
+      padding: 3px 7px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-xs);
+      background: var(--surface-raised);
+      color: var(--text-muted);
+      font: 9px/1 var(--font-mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .concept-chip { color: var(--text-winner); border-color: color-mix(in srgb, var(--accent-winner) 38%, var(--border-default)); background: var(--gold-soft); }
+    .panel { border: 1px solid var(--border-default); border-radius: var(--r-lg); background: var(--surface-card); overflow: hidden; box-shadow: var(--shadow-sm); }
+    .panel + .panel { margin-top: 14px; }
+    .panel-head { min-height: 42px; padding: 10px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border-default); background: var(--surface-header); }
+    .panel-title { font: 600 11px/1.2 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+    .panel-body { padding: 14px; }
+    .hero-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
+    .hero-copy h1 { margin: 4px 0 7px; font-size: clamp(24px, 3vw, 38px); line-height: 1; letter-spacing: -.035em; }
+    .hero-copy p { max-width: 720px; margin: 0; color: var(--text-body); line-height: 1.55; }
+    .hero-stat { text-align: right; flex: 0 0 auto; }
+    .hero-number { font: 700 34px/1 var(--font-display); color: var(--text-data); }
+    .hero-label { margin-top: 5px; color: var(--text-muted); font: 9px/1.2 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+    .metric-track { height: 5px; border-radius: 999px; background: var(--surface-well); overflow: hidden; }
+    .metric-fill { height: 100%; background: #3987E5; border-radius: 999px; transition: width var(--dur-3) var(--ease-out); }
+    .lineage-wrap { min-width: 780px; padding: 14px 10px 8px; }
+    .lineage-grid { display: grid; grid-template-columns: repeat(5, minmax(135px, 1fr)); grid-template-rows: repeat(3, minmax(116px, auto)); gap: 22px 26px; position: relative; }
+    .edge { position: absolute; height: 2px; background: var(--border-strong); transform-origin: 0 50%; z-index: 0; pointer-events: none; }
+    .edge.derived { background: repeating-linear-gradient(90deg, var(--accent-side-a) 0 7px, transparent 7px 11px); }
+    .node {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      min-height: 112px;
+      text-align: left;
+      padding: 11px;
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-md);
+      background: var(--surface-raised);
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+      transition: transform var(--dur-1) var(--ease-snap), border-color var(--dur-1) var(--ease-snap), box-shadow var(--dur-1) var(--ease-snap);
+    }
+    .node:hover, .node:focus-visible { transform: translateY(-1px); border-color: var(--border-strong); outline: none; }
+    .node[aria-pressed="true"] { border-color: var(--border-active); box-shadow: var(--glow-active); }
+    .node.best { border-color: color-mix(in srgb, var(--accent-winner) 55%, var(--border-default)); }
+    .node.best[aria-pressed="true"] { box-shadow: var(--glow-winner); }
+    .node.unknown { border-color: color-mix(in srgb, var(--accent-danger) 60%, var(--border-default)); background: linear-gradient(135deg, var(--live-soft), var(--surface-raised) 46%); }
+    .node.failed { border-color: color-mix(in srgb, var(--accent-side-b) 50%, var(--border-default)); }
+    .node-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .node-id { color: var(--text-muted); font: 9px/1 var(--font-mono); letter-spacing: .08em; }
+    .node-glyph { font: 700 13px/1 var(--font-mono); }
+    .node-title { margin-top: 10px; font-size: 13px; font-weight: 600; line-height: 1.2; }
+    .node-sub { margin-top: 5px; color: var(--text-muted); font: 10px/1.35 var(--font-mono); }
+    .node-metric { margin-top: 10px; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .node-value { font: 600 11px/1 var(--font-mono); color: var(--text-body); }
+    .node-role { position: absolute; top: -10px; left: 10px; }
+    .queue-note { margin-top: 14px; display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--blue-soft); color: var(--text-body); line-height: 1.45; }
+    .queue-note strong { color: var(--text-data); font-family: var(--font-mono); }
+    .inspector-head { padding: 15px; border-bottom: 1px solid var(--border-default); }
+    .inspector-title { margin: 7px 0 5px; font-size: 19px; line-height: 1.15; }
+    .inspector-sub { color: var(--text-muted); font: 10px/1.45 var(--font-mono); overflow-wrap: anywhere; }
+    .inspector-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border-default); }
+    .inspector-tab { border: 0; border-right: 1px solid var(--border-default); background: var(--surface-header); color: var(--text-muted); padding: 10px 4px; cursor: pointer; font: 9px/1 var(--font-mono); letter-spacing: .07em; text-transform: uppercase; }
+    .inspector-tab:last-child { border-right: 0; }
+    .inspector-tab[aria-selected="true"] { color: var(--text-strong); background: var(--surface-raised); box-shadow: inset 0 -2px var(--accent-primary); }
+    .inspector-body { padding: 14px; min-height: 390px; }
+    .detail-grid { display: grid; gap: 12px; }
+    .detail-block { padding-bottom: 12px; border-bottom: 1px solid var(--border-default); }
+    .detail-block:last-child { border-bottom: 0; }
+    .detail-label { color: var(--text-muted); font: 9px/1.2 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+    .detail-value { margin-top: 5px; color: var(--text-body); line-height: 1.5; overflow-wrap: anywhere; }
+    .code-box { margin-top: 7px; padding: 10px; border-radius: var(--r-sm); background: var(--surface-well); color: var(--text-body); font: 10px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px; border-top: 1px solid var(--border-default); }
+    .actions .full { grid-column: 1 / -1; }
+    .sequence { display: grid; gap: 9px; }
+    .sequence-row { display: grid; grid-template-columns: 62px minmax(0, 1fr) 110px 128px; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--surface-raised); cursor: pointer; text-align: left; }
+    .sequence-row:hover, .sequence-row[aria-pressed="true"] { border-color: var(--border-active); }
+    .sequence-step { font: 700 12px/1 var(--font-mono); }
+    .sequence-meta { min-width: 0; }
+    .sequence-hash { color: var(--text-body); font: 10px/1.3 var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sequence-time { margin-top: 3px; color: var(--text-muted); font: 9px/1.3 var(--font-mono); }
+    .sequence-metric { font: 600 12px/1 var(--font-mono); text-align: right; color: var(--text-data); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font: 10px/1.45 var(--font-mono); }
+    th, td { padding: 9px 8px; border-bottom: 1px solid var(--border-default); text-align: left; white-space: nowrap; }
+    th { color: var(--text-muted); letter-spacing: .08em; text-transform: uppercase; background: var(--surface-header); }
+    .promotion-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 12px; }
+    .promotion-card { border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--surface-raised); padding: 13px; }
+    .promotion-card.featured { border-color: color-mix(in srgb, var(--accent-winner) 48%, var(--border-default)); box-shadow: var(--glow-winner); }
+    .promotion-role { font: 9px/1 var(--font-mono); letter-spacing: .12em; color: var(--text-muted); text-transform: uppercase; }
+    .promotion-name { margin-top: 8px; font-size: 17px; }
+    .promotion-score { margin-top: 12px; font: 700 27px/1 var(--font-display); color: var(--text-data); }
+    .checklist { display: grid; gap: 8px; margin-top: 14px; }
+    .check { display: grid; grid-template-columns: 18px 1fr; gap: 7px; color: var(--text-body); font: 10px/1.35 var(--font-mono); }
+    .check.ok .check-icon { color: var(--text-accent); }
+    .check.block .check-icon { color: var(--text-danger); }
+    .incident { margin-top: 14px; border: 1px solid var(--accent-danger); border-radius: var(--r-md); background: var(--live-soft); overflow: hidden; }
+    .incident-head { padding: 11px 13px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid color-mix(in srgb, var(--accent-danger) 35%, var(--border-default)); }
+    .incident-body { padding: 13px; color: var(--text-body); line-height: 1.55; }
+    .blocked-reason { padding: 12px; border: 1px solid var(--border-default); border-radius: var(--r-sm); background: var(--surface-well); color: var(--text-muted); font: 10px/1.5 var(--font-mono); }
+    .toast { position: fixed; right: 18px; bottom: 18px; z-index: 50; max-width: 380px; padding: 11px 13px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-raised); box-shadow: var(--shadow-lg); color: var(--text-body); transform: translateY(24px); opacity: 0; pointer-events: none; transition: transform var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out); }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    [data-view] { display: none; }
+    [data-view].active { display: block; }
+    [data-inspector-panel] { display: none; }
+    [data-inspector-panel].active { display: block; }
+    html[data-theme="light"] body { background: radial-gradient(circle at 84% -10%, rgba(37,99,201,.08), transparent 34rem), radial-gradient(circle at 8% 110%, rgba(79,122,14,.08), transparent 30rem), var(--surface-app); }
+    html[data-theme="light"] .source-lockup img { filter: grayscale(1) contrast(1.3); }
+    html[data-theme="light"] .node, html[data-theme="light"] .promotion-card { box-shadow: 0 3px 12px rgba(50,42,28,.06); }
+    html.sim-reduced-motion *, html.sim-reduced-motion *::before, html.sim-reduced-motion *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+    @media (forced-colors: active) {
+      .node.best, .promotion-card.featured { border-width: 2px; }
+      .node.unknown { border-style: double; }
+      .node.failed { border-style: dashed; }
+      .metric-fill { background: CanvasText; }
+    }
+    @media (max-width: 1120px) {
+      .workspace { grid-template-columns: 190px minmax(460px, 1fr); }
+      .inspector { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border-default); }
+      .inspector-tabs { max-width: 520px; }
+      .inspector-body { min-height: 260px; }
+      .actions { max-width: 520px; }
+    }
+    @media (max-width: 760px) {
+      .topbar { grid-template-columns: 1fr auto; }
+      .source-lockup { display: none; }
+      .trust-strip { grid-template-columns: 1fr 1fr; }
+      .trust-item:nth-child(2) { border-right: 0; }
+      .trust-item:nth-child(-n+2) { border-bottom: 1px solid var(--border-default); }
+      .review-tabs { overflow-x: auto; }
+      .workspace { display: block; }
+      .context-rail { border-right: 0; border-bottom: 1px solid var(--border-default); }
+      .canvas { padding: 12px; }
+      .promotion-grid { grid-template-columns: 1fr; }
+      .sequence-row { grid-template-columns: 50px 1fr 88px; }
+      .sequence-row .provenance-chip { display: none; }
+      .hero-row { display: block; }
+      .hero-stat { margin-top: 16px; text-align: left; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0ms !important; transition-duration: 0ms !important; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <img class="mark" src="assets/agentdex-mark.svg" alt="AgentDex" />
+      <div class="brand-lockup">
+        <div class="brand-title">Reviewer Lab <span style="color:var(--text-accent)">/ ADX-v3</span></div>
+        <div class="brand-sub">Weco product-mirror review · AgentDex concept</div>
+      </div>
+    </div>
+    <div class="source-lockup" title="Weco is a reference source, not the product identity">
+      <span>Informed by</span>
+      <img src="assets/weco-logo.svg" alt="Weco" />
+    </div>
+    <div class="controls">
+      <button class="icon-btn" id="motionToggle" type="button" aria-pressed="false">Motion: on</button>
+      <button class="icon-btn" id="themeToggle" type="button">Theme</button>
+    </div>
+  </header>
+
+  <section class="trust-strip" aria-label="Authority and readiness contract">
+    <div class="trust-item"><div class="eyebrow">Authority</div><div class="trust-value good">ONE ROUTER · FUGUNANO</div></div>
+    <div class="trust-item"><div class="eyebrow">Preset</div><div class="trust-value">PR REVIEW ROUTING · V1</div></div>
+    <div class="trust-item"><div class="eyebrow">Evidence mode</div><div class="trust-value data">LOCAL + RECOMPUTED</div></div>
+    <div class="trust-item"><div class="eyebrow">Readiness</div><div class="trust-value warn">EXPERIMENTAL · CONCEPT</div></div>
+  </section>
+
+  <nav class="review-tabs" role="tablist" aria-label="Reviewer Lab views">
+    <button class="review-tab" role="tab" aria-selected="true" data-tab="managed">Managed lineage</button>
+    <button class="review-tab" role="tab" aria-selected="false" data-tab="imported">Imported sequence</button>
+    <button class="review-tab" role="tab" aria-selected="false" data-tab="promotion">Promotion gate</button>
+  </nav>
+
+  <main class="workspace">
+    <aside class="context-rail">
+      <section class="rail-section" style="margin-top:0;padding-top:0;border-top:0">
+        <div class="eyebrow">Workspace 工作区</div>
+        <h2 class="rail-title">Bridges Quality Gate</h2>
+        <p class="rail-copy">Improve a reviewer-quality scorer against frozen external fixtures. Online routing remains owned by FuguNano.</p>
+        <div class="meta-list">
+          <div class="meta-row"><div class="eyebrow">Mutable surface</div><div class="meta-value">score_quality()</div></div>
+          <div class="meta-row"><div class="eyebrow">Objective</div><div class="meta-value">quality_signal ↑</div></div>
+          <div class="meta-row"><div class="eyebrow">Evaluator</div><div class="meta-value">0.6 discrimination + 0.4 separation</div></div>
+          <div class="meta-row"><div class="eyebrow">Run id</div><div class="meta-value">3edf773c-e306-435d-965a-ea7a9832ded9</div></div>
+        </div>
+      </section>
+      <section class="rail-section">
+        <div class="eyebrow">State grammar 状态语法</div>
+        <div class="status-key key-baseline"><span class="status-symbol round"><span>0</span></span><span>Baseline / imported snapshot</span></div>
+        <div class="status-key key-active"><span class="status-symbol round"><span>●</span></span><span>Active / pending review</span></div>
+        <div class="status-key key-best"><span class="status-symbol diamond"><span>✓</span></span><span>Evidenced best / promotion</span></div>
+        <div class="status-key key-failed"><span class="status-symbol"><span>×</span></span><span>Failed / rejected / censored</span></div>
+        <div class="status-key key-unknown"><span class="status-symbol"><span>!</span></span><span>Effect unknown / reconcile</span></div>
+      </section>
+      <section class="rail-section">
+        <div class="eyebrow">Honesty boundary</div>
+        <p class="rail-copy">Managed lineage is a mechanics-valid demo fixture. Imported sequence is real local snapshot evidence. Historical Weco metrics and parentage were not retained.</p>
+        <div style="margin-top:10px"><span class="concept-chip">Auth visual pending</span></div>
+      </section>
+    </aside>
+
+    <section class="canvas">
+      <section data-view="managed" class="active">
+        <div class="hero-row">
+          <div class="hero-copy">
+            <div class="eyebrow">Managed lineage · mechanics-valid demo fixture</div>
+            <h1>Branch the search. Preserve the proof.</h1>
+            <p>Weco's derive/review grammar adapted to one FuguNano router. Global best, promotion candidate, and live state remain distinct.</p>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-number">0.5667</div>
+            <div class="hero-label">Recomputed held-out signal · saved best</div>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">Experiment lineage 实验谱系</div>
+            <div style="display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end">
+              <span class="concept-chip">Demo fixture</span>
+              <span class="provenance-chip">1 evaluation consumer</span>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="lineage-wrap">
+              <div class="lineage-grid" id="managedLineage" aria-label="Managed experiment lineage"></div>
+            </div>
+            <div class="queue-note"><strong>QUEUE OWNER</strong><span>Derived branches attach behind one local evaluation consumer. File swaps never run concurrently in the same working tree.</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">Review topology 审查拓扑</div>
+            <span class="concept-chip">Concept · scales generate/evaluate, never routing</span>
+          </div>
+          <div class="panel-body">
+            <p class="rail-copy" style="max-width:640px;margin:0 0 12px">One review does not have to mean one evaluator call. A large PR/refactor picks one of three explicit modes; the join barrier and reduce rules are the same ones FuguNano already uses for fan-out dispatch, scoped here to review.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px" role="tablist" aria-label="Review topology mode" id="topologyModes">
+              <button class="quiet-btn" data-topology="single" aria-pressed="true" type="button">Single</button>
+              <button class="quiet-btn" data-topology="batch" aria-pressed="false" type="button">Small-batch loop</button>
+              <button class="quiet-btn" data-topology="mapreduce" aria-pressed="false" type="button">Map → barrier → reduce → verify</button>
+            </div>
+            <div id="topologySingle">
+              <div class="blocked-reason">One candidate, one evaluator pass. Default for small, single-surface changes — the flow shown above in Experiment lineage.</div>
+            </div>
+            <div id="topologyBatch" style="display:none">
+              <div class="sequence">
+                <div class="sequence-row" style="cursor:default"><span class="sequence-step">B1</span><span class="sequence-meta"><div class="sequence-hash">Batch 1 · files 1–4</div><div class="sequence-time">Evaluated · human accepted</div></span><span class="sequence-metric" style="color:var(--text-accent)">✓ accept</span><span class="provenance-chip">Terminal</span></div>
+                <div class="sequence-row" style="cursor:default"><span class="sequence-step">B2</span><span class="sequence-meta"><div class="sequence-hash">Batch 2 · files 5–8</div><div class="sequence-time">Evaluated · human review pending</div></span><span class="sequence-metric" style="color:var(--text-winner)">● reviewing</span><span class="provenance-chip">In loop</span></div>
+                <div class="sequence-row" style="cursor:default;opacity:.55"><span class="sequence-step">B3</span><span class="sequence-meta"><div class="sequence-hash">Batch 3 · files 9–12</div><div class="sequence-time">Not started</div></span><span class="sequence-metric">—</span><span class="provenance-chip">Queued</span></div>
+              </div>
+              <div class="blocked-reason" style="margin-top:12px">Each batch runs the bounded review-fix loop (generate → evaluate → human accept/reject) before the next batch opens. A rejected batch does not advance the queue.</div>
+            </div>
+            <div id="topologyMapreduce" style="display:none">
+              <div class="lineage-wrap" style="min-width:0;padding:4px 0 0">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px" id="mapUnits"></div>
+              </div>
+              <div class="queue-note" id="barrierNote" style="margin-top:14px"></div>
+              <div class="promotion-card" id="reduceCard" style="margin-top:12px">
+                <div class="promotion-role">Reduced verdict</div>
+                <h3 class="promotion-name" id="reduceVerdict">—</h3>
+                <div class="hero-label" id="reduceDetail"></div>
+                <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+                  <button class="primary-btn" id="forceReduceBtn" type="button">Reduce now</button>
+                  <button class="quiet-btn" data-toast="Every per-unit result stays linked; reduce is a view, not a replacement.">View per-unit evidence</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section data-view="imported">
+        <div class="hero-row">
+          <div class="hero-copy">
+            <div class="eyebrow">Imported sequence · observed local snapshot bytes</div>
+            <h1>Seven snapshots. No invented genealogy.</h1>
+            <p>Steps 0–6 and `best` are real files. Values below are new 2026-07-26 recomputations because historical Weco metrics were not retained.</p>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-number">8</div>
+            <div class="hero-label">Observed snapshot records · steps 0–6 + best</div>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">Snapshot sequence 快照序列</div>
+            <div style="display:flex;gap:7px"><span class="provenance-chip">Parentage not recorded</span><span class="provenance-chip">Metric recomputed</span></div>
+          </div>
+          <div class="panel-body">
+            <div class="sequence" id="sequenceList"></div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">Accessible table view 可访问表格</div><span class="provenance-chip">Same values · no hover required</span></div>
+          <div class="table-wrap"><table id="sequenceTable"><thead><tr><th>Snapshot</th><th>SHA-256</th><th>Bytes</th><th>Held-out</th><th>Discrimination</th><th>Separation</th><th>Provenance</th></tr></thead><tbody></tbody></table></div>
+        </section>
+      </section>
+
+      <section data-view="promotion">
+        <div class="hero-row">
+          <div class="hero-copy">
+            <div class="eyebrow">Promotion gate · concept workflow</div>
+            <h1>Best is not live.</h1>
+            <p>A candidate can score well and still be blocked by missing historical evidence, operator approval, apply receipts, or unresolved execution ambiguity.</p>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-number" style="color:var(--text-winner)">BLOCKED</div>
+            <div class="hero-label">No FuguNano-owned apply receipt</div>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">Live vs best vs promotion candidate</div><span class="concept-chip">Concept states</span></div>
+          <div class="panel-body">
+            <div class="promotion-grid">
+              <article class="promotion-card">
+                <div class="promotion-role">Live 运行中</div>
+                <h3 class="promotion-name">PR Review Routing · static</h3>
+                <div class="promotion-score">UNKNOWN</div>
+                <div class="hero-label">No live metric projected in prototype</div>
+                <div class="checklist">
+                  <div class="check ok"><span class="check-icon">✓</span><span>FuguNano R1/R2 authority</span></div>
+                  <div class="check block"><span class="check-icon">×</span><span>Effective config digest unavailable</span></div>
+                </div>
+              </article>
+              <article class="promotion-card">
+                <div class="promotion-role">Global best 全局最佳</div>
+                <h3 class="promotion-name">Saved snapshot · step 6</h3>
+                <div class="promotion-score">0.5667</div>
+                <div class="hero-label">Recomputed held-out quality signal</div>
+                <div class="checklist">
+                  <div class="check ok"><span class="check-icon">✓</span><span>Immutable snapshot preserved</span></div>
+                  <div class="check block"><span class="check-icon">×</span><span>Historical metric not retained</span></div>
+                </div>
+              </article>
+              <article class="promotion-card featured">
+                <div class="promotion-role">Promotion candidate 晋升候选</div>
+                <h3 class="promotion-name">Reviewer scorer · candidate P1</h3>
+                <div class="promotion-score">0.5667</div>
+                <div class="hero-label">Concept nomination · not applied</div>
+                <div class="checklist">
+                  <div class="check ok"><span class="check-icon">✓</span><span>Held-out recomputation available</span></div>
+                  <div class="check block"><span class="check-icon">×</span><span>Operator approval missing</span></div>
+                  <div class="check block"><span class="check-icon">×</span><span>Apply receipt contract missing</span></div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="incident">
+          <div class="incident-head"><div><span class="status-chip" style="color:var(--text-danger)">! EFFECT_UNKNOWN</span> <strong style="margin-left:8px">Attempt may have started</strong></div><span class="concept-chip">Safety fixture</span></div>
+          <div class="incident-body">
+            <p style="margin-top:0">The last provable event is `route.decided`; a child process may have spawned, but no matching terminal receipt was recovered. Automated fallback, retry, promotion, and learning are blocked.</p>
+            <div class="blocked-reason">Required reconciliation: inspect process/output references → locate external side effects → recover or finalize `dispatch.terminal` → attribute actual executor → only then decide disposition. Possible side effect; do not retry.</div>
+            <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="danger-btn" disabled>Retry blocked</button><button class="quiet-btn" data-toast="Reconciliation checklist opened · prototype only">Open reconciliation</button></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">Promotion decision</div><span class="provenance-chip">FuguNano-owned boundary</span></div>
+          <div class="panel-body">
+            <div class="blocked-reason">Blocked by: historical metric unavailable · effective config digest unavailable · operator approval missing · no supported FuguNano apply receipt · effect-unknown incident unresolved.</div>
+            <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="primary-btn" disabled>Promote to live</button><button class="quiet-btn" data-toast="Evidence packet previewed · prototype writes no file">Export evidence packet</button></div>
+          </div>
+        </section>
+      </section>
+    </section>
+
+    <aside class="inspector">
+      <div class="inspector-head">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div class="eyebrow" id="inspectorKind">Selected node</div><span class="provenance-chip" id="inspectorProvenance">Demo fixture</span></div>
+        <h2 class="inspector-title" id="inspectorTitle">Baseline · step 0</h2>
+        <div class="inspector-sub" id="inspectorSub">Explicit comparison anchor</div>
+      </div>
+      <div class="inspector-tabs" role="tablist" aria-label="Evidence inspector tabs">
+        <button class="inspector-tab" aria-selected="true" data-inspector-tab="diff">Diff</button>
+        <button class="inspector-tab" aria-selected="false" data-inspector-tab="evidence">Evidence</button>
+        <button class="inspector-tab" aria-selected="false" data-inspector-tab="execution">Execution</button>
+        <button class="inspector-tab" aria-selected="false" data-inspector-tab="artifacts">Artifacts</button>
+      </div>
+      <div class="inspector-body">
+        <section data-inspector-panel="diff" class="active"><div class="detail-grid" id="diffPanel"></div></section>
+        <section data-inspector-panel="evidence"><div class="detail-grid" id="evidencePanel"></div></section>
+        <section data-inspector-panel="execution"><div class="detail-grid" id="executionPanel"></div></section>
+        <section data-inspector-panel="artifacts"><div class="detail-grid" id="artifactsPanel"></div></section>
+      </div>
+      <div class="actions" id="inspectorActions"></div>
+    </aside>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+  const managedNodes = [
+    { id:'B0', grid:'1 / 2 / 2 / 3', title:'Baseline · step 0', sub:'Frozen comparison anchor', glyph:'0', kind:'baseline', metric:.1333, role:'BASELINE', provenance:'RECOMPUTED', desc:'Real baseline metric reused inside an illustrative managed-lineage fixture.', diff:'No change. Frozen score_quality() baseline.', evidence:'Held-out 0.1333 · discrimination 0.0000 · separation 0.3333', execution:'Evaluator: static fixtures · zero spend · one local consumer', artifacts:'SHA 8538d5df4bb9… · 741 bytes', actions:['Inspect'] },
+    { id:'M1', grid:'2 / 2 / 3 / 3', title:'Candidate · semantic scorer', sub:'Evaluated and evidenced', glyph:'✓', kind:'best', metric:.5667, role:'GLOBAL BEST', provenance:'DEMO + RECOMPUTED', desc:'Mechanics-valid branch using a real recomputed candidate value; parent relation is illustrative.', diff:'Adds length, token-overlap, structure, and refusal dimensions.', evidence:'Held-out 0.5667 · discrimination 0.5000 · separation 0.6667', execution:'Status: evaluated · candidate SHA 9ecc3883a04b…', artifacts:'Illustrative managed node; source value corresponds to saved step 6.', actions:['Derive','Nominate'] },
+    { id:'R2', grid:'3 / 1 / 4 / 2', title:'Revision · concise structure', sub:'Pending human review', glyph:'●', kind:'active', metric:null, role:'PENDING REVIEW', provenance:'DEMO FIXTURE', desc:'A review-gated proposal. It has not been evaluated and therefore has no metric.', diff:'Concept diff: tighten structure weighting and retain refusal guard.', evidence:'Metric unavailable · review required before submit.', execution:'Queue: not claimed · evaluation consumer idle.', artifacts:'Candidate snapshot pending review.', actions:['Revise','Reject','Submit'] },
+    { id:'D3', grid:'3 / 3 / 4 / 4', title:'Derived · safety-first', sub:'Queued behind consumer', glyph:'◇', kind:'active', metric:null, role:'DERIVED · QUEUED', provenance:'DEMO FIXTURE', desc:'A fresh-context branch derived from M1. It preserves its parent and waits for the single evaluator.', diff:'Steering: penalize reward-hacking and require external correctness.', evidence:'Inherited baseline · not re-evaluated yet.', execution:'Queue position 1 · consumer owned by active lineage.', artifacts:'Branch snapshot prepared; output absent.', actions:['Inspect queue','Stop branch'] },
+    { id:'F4', grid:'4 / 1 / 5 / 2', title:'Candidate · format heuristic', sub:'Evaluator rejected', glyph:'×', kind:'failed', metric:.08, role:'FAILED', provenance:'DEMO FIXTURE', desc:'A failed candidate remains visible and contributes negative design knowledge.', diff:'Over-weighted markdown formatting; failed correctness guard.', evidence:'Evaluator failure · candidate not eligible for comparison.', execution:'Terminal state: eval_failed · no promotion.', artifacts:'Failure output retained by reference.', actions:['Inspect'] },
+    { id:'U5', grid:'4 / 4 / 5 / 5', title:'Attempt · receipt missing', sub:'Possible external effect', glyph:'!', kind:'unknown', metric:null, role:'EFFECT_UNKNOWN', provenance:'SAFETY FIXTURE', desc:'Possible spawn without a matching terminal receipt. Retry and fallback are prohibited.', diff:'Unknown: candidate may have executed.', evidence:'Last proven event: route.decided · terminal evidence missing.', execution:'Actual executor unverified · reconciliation required.', artifacts:'No trustworthy terminal artifact.', actions:['Reconcile'] },
+    { id:'P6', grid:'5 / 2 / 6 / 3', title:'Promotion candidate · P1', sub:'Nominated, not live', glyph:'✓', kind:'best', metric:.5667, role:'PROMOTION CANDIDATE', provenance:'CONCEPT STATE', desc:'Nominated from global best. Promotion blockers remain; selection does not change live state.', diff:'Candidate bytes freeze to the nominated digest.', evidence:'Held-out evidence present; historical metric and natural outcome absent.', execution:'Apply receipt missing · operator approval missing.', artifacts:'Evidence dossier concept only.', actions:['Open dossier'] }
+  ];
+  const managedEdges = [
+    ['B0','M1','solid'], ['M1','R2','solid'], ['M1','D3','derived'], ['R2','F4','solid'], ['D3','U5','derived'], ['M1','P6','derived']
+  ];
+  const importedRows = [
+    {step:'0',sha:'8538d5df4bb99df54f7d372308c00c1662b2f685516f144189a39e24352a3bcc',bytes:741,created:'2026-07-18 23:37:03',held:.1333,disc:0,sep:.3333,prov:'RECOMPUTED'},
+    {step:'1',sha:'cda7df81827a55e9f7c762d240889a7bd8391dc0237276c8b6b372547a0444c9',bytes:2993,created:'2026-07-18 23:37:39',held:.5667,disc:.5,sep:.6667,prov:'RECOMPUTED'},
+    {step:'2',sha:'d1fbc66bcdd78d0900524c4641c2f7b3084b0cb0ce137bf5561cc8d268571c6e',bytes:4400,created:'2026-07-18 23:38:38',held:.5667,disc:.5,sep:.6667,prov:'RECOMPUTED'},
+    {step:'3',sha:'bb7e3ab85f3ac6d4a1a3dbc97ddc5d581e9eaba02c15582626009c081df1a66f',bytes:4386,created:'2026-07-18 23:39:28',held:.5239,disc:.4287,sep:.6667,prov:'RECOMPUTED'},
+    {step:'4',sha:'5b62d7b06e43580878b549f757fe2ba2dfe81443635162423087ebc10db79dbe',bytes:3469,created:'2026-07-18 23:40:42',held:.5667,disc:.5,sep:.6667,prov:'RECOMPUTED'},
+    {step:'5',sha:'d4432687c7f5ad5fb3d49b499d8d8d53d95d929284f42b0cf08400a82da29c06',bytes:3706,created:'2026-07-18 23:41:31',held:.4492,disc:.3043,sep:.6667,prov:'RECOMPUTED'},
+    {step:'6',sha:'9ecc3883a04b69f7a4bfea1a19366e97bbd3fe24058467c895ca68a39aff7326',bytes:3148,created:'2026-07-18 23:42:39',held:.5667,disc:.5,sep:.6667,prov:'RECOMPUTED'},
+    {step:'best',sha:'9ecc3883a04b69f7a4bfea1a19366e97bbd3fe24058467c895ca68a39aff7326',bytes:3148,created:'2026-07-18 23:42:47',held:.5667,disc:.5,sep:.6667,prov:'LOCAL MANIFEST'}
+  ];
+  let selected = managedNodes[0];
+  let inspectorTab = 'diff';
+
+  function el(tag, className, text) {
+    const n = document.createElement(tag);
+    if (className) n.className = className;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+  function metricWidth(v) { return v == null ? 0 : Math.max(3, Math.min(100, v * 100)); }
+  function showToast(message) {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.classList.add('show');
+    clearTimeout(showToast.t);
+    showToast.t = setTimeout(() => toast.classList.remove('show'), 2400);
+  }
+  function renderManaged() {
+    const grid = document.getElementById('managedLineage');
+    grid.textContent = '';
+    managedNodes.forEach(node => {
+      const btn = el('button', `node ${node.kind}`);
+      btn.type = 'button';
+      btn.style.gridArea = node.grid;
+      btn.dataset.nodeId = node.id;
+      btn.setAttribute('aria-pressed', String(selected && selected.id === node.id));
+      btn.setAttribute('aria-label', `${node.role}: ${node.title}`);
+      const top = el('div','node-top');
+      top.append(el('span','node-id',node.id), el('span','node-glyph',node.glyph));
+      btn.append(top);
+      const role = el('span', node.kind === 'best' ? 'concept-chip node-role' : 'provenance-chip node-role', node.role);
+      btn.append(role, el('div','node-title',node.title), el('div','node-sub',node.sub));
+      const metric = el('div','node-metric');
+      const track = el('div','metric-track');
+      const fill = el('div','metric-fill');
+      fill.style.width = `${metricWidth(node.metric)}%`;
+      track.append(fill);
+      metric.append(track, el('span','node-value',node.metric == null ? '—' : node.metric.toFixed(4)));
+      btn.append(metric);
+      btn.addEventListener('click', () => selectManaged(node.id));
+      grid.append(btn);
+    });
+    requestAnimationFrame(drawEdges);
+  }
+  function drawEdges() {
+    const grid = document.getElementById('managedLineage');
+    grid.querySelectorAll('.edge').forEach(n => n.remove());
+    const base = grid.getBoundingClientRect();
+    managedEdges.forEach(([a,b,type]) => {
+      const A = grid.querySelector(`[data-node-id="${a}"]`).getBoundingClientRect();
+      const B = grid.querySelector(`[data-node-id="${b}"]`).getBoundingClientRect();
+      const x1 = A.left + A.width/2 - base.left;
+      const y1 = A.top + A.height - base.top;
+      const x2 = B.left + B.width/2 - base.left;
+      const y2 = B.top - base.top;
+      const dx = x2-x1, dy=y2-y1, len=Math.hypot(dx,dy), angle=Math.atan2(dy,dx)*180/Math.PI;
+      const edge=el('div',`edge ${type==='derived'?'derived':''}`);
+      edge.style.left=`${x1}px`; edge.style.top=`${y1}px`; edge.style.width=`${len}px`; edge.style.transform=`rotate(${angle}deg)`;
+      grid.prepend(edge);
+    });
+  }
+  function selectManaged(id) {
+    selected = managedNodes.find(n => n.id === id);
+    renderManaged(); renderInspector();
+  }
+  function selectImported(row) {
+    selected = {
+      id:`S${row.step}`,
+      title:`Snapshot · ${row.step}`,
+      sub: row.step === 'best' ? 'Explicit best manifest' : 'Numbered local snapshot',
+      role: row.step === 'best' ? 'BEST EVIDENCED' : 'IMPORTED SNAPSHOT',
+      provenance: row.prov,
+      desc:'Observed local file bytes. Sequence order is known; optimizer parentage and historical metric are unavailable.',
+      diff:`Compare against baseline step 0 · ${row.bytes} bytes · SHA ${row.sha.slice(0,16)}…`,
+      evidence:`Held-out ${row.held.toFixed(4)} · discrimination ${row.disc.toFixed(4)} · separation ${row.sep.toFixed(4)} · recomputed 2026-07-26`,
+      execution:'Historical execution metadata unavailable. This value is a new zero-spend local recomputation.',
+      artifacts:`${row.sha} · created ${row.created} · manifest-backed snapshot`,
+      actions:['Compare to baseline']
+    };
+    renderInspector();
+    document.querySelectorAll('.sequence-row').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.step===row.step)));
+  }
+  function detailBlock(label,value,code=false) {
+    const block=el('div','detail-block');
+    block.append(el('div','detail-label',label), el('div',code?'code-box':'detail-value',value));
+    return block;
+  }
+  function renderInspector() {
+    document.getElementById('inspectorKind').textContent=selected.role || 'Selected evidence';
+    document.getElementById('inspectorTitle').textContent=selected.title;
+    document.getElementById('inspectorSub').textContent=selected.sub || selected.desc;
+    document.getElementById('inspectorProvenance').textContent=selected.provenance || 'UNKNOWN';
+    const panels={
+      diff:[['Summary',selected.desc],['Change / comparison',selected.diff,true],['Diff target','Baseline step 0 · selector is prototype-only']],
+      evidence:[['Evaluator evidence',selected.evidence],['Contract','quality_signal ↑ · frozen fixtures · held-out disclosed'],['Learning disposition','Offline evidence · n_eff=0 · no posterior update']],
+      execution:[['Execution',selected.execution],['Authority','FuguNano owns online route, dispatch, events, and fold'],['Safety','After possible spawn: EFFECT_UNKNOWN · no fallback or retry']],
+      artifacts:[['Artifact record',selected.artifacts,true],['Historical gaps','Original metric, model identity, cost, and genealogy remain unavailable unless explicitly recorded'],['Claim class',selected.provenance || 'UNKNOWN']]
+    };
+    Object.entries(panels).forEach(([key,items])=>{
+      const target=document.getElementById(`${key}Panel`); target.textContent=''; items.forEach(([l,v,c])=>target.append(detailBlock(l,v,c)));
+    });
+    const actions=document.getElementById('inspectorActions'); actions.textContent='';
+    (selected.actions||['Inspect']).forEach((name,i)=>{
+      const b=el('button',i===0?'primary-btn':'quiet-btn',name); b.type='button'; b.addEventListener('click',()=>showToast(`${name} · prototype only; no state changed`)); actions.append(b);
+    });
+    const close=el('button','quiet-btn full','Open provenance details'); close.type='button'; close.addEventListener('click',()=>{ inspectorTab='artifacts'; setInspectorTab(); showToast('Provenance details opened'); }); actions.append(close);
+  }
+  function setInspectorTab() {
+    document.querySelectorAll('[data-inspector-tab]').forEach(btn=>btn.setAttribute('aria-selected',String(btn.dataset.inspectorTab===inspectorTab)));
+    document.querySelectorAll('[data-inspector-panel]').forEach(p=>p.classList.toggle('active',p.dataset.inspectorPanel===inspectorTab));
+  }
+  function renderSequence() {
+    const list=document.getElementById('sequenceList'); list.textContent='';
+    const tbody=document.querySelector('#sequenceTable tbody'); tbody.textContent='';
+    importedRows.forEach(row=>{
+      const btn=el('button','sequence-row'); btn.type='button'; btn.dataset.step=row.step; btn.setAttribute('aria-pressed','false');
+      btn.append(el('span','sequence-step',row.step==='best'?'BEST':`STEP ${row.step}`));
+      const meta=el('span','sequence-meta'); meta.append(el('div','sequence-hash',`${row.sha.slice(0,18)}… · ${row.bytes} bytes`),el('div','sequence-time',`${row.created} · parentage not recorded`)); btn.append(meta);
+      btn.append(el('span','sequence-metric',row.held.toFixed(4)),el('span','provenance-chip',row.prov));
+      btn.addEventListener('click',()=>selectImported(row)); list.append(btn);
+      const tr=document.createElement('tr');
+      [row.step,row.sha,row.bytes,row.held.toFixed(4),row.disc.toFixed(4),row.sep.toFixed(4),row.prov].forEach(v=>tr.append(el('td','',String(v)))); tbody.append(tr);
+    });
+  }
+  document.querySelectorAll('.review-tab').forEach(tab=>tab.addEventListener('click',()=>{
+    const name=tab.dataset.tab;
+    document.querySelectorAll('.review-tab').forEach(t=>t.setAttribute('aria-selected',String(t===tab)));
+    document.querySelectorAll('[data-view]').forEach(v=>v.classList.toggle('active',v.dataset.view===name));
+    if(name==='managed'){ selected=managedNodes[0]; renderManaged(); }
+    if(name==='imported'){ selectImported(importedRows[0]); }
+    if(name==='promotion'){
+      selected={title:'Promotion gate',sub:'Concept decision surface',role:'BLOCKED PROMOTION',provenance:'CONCEPT STATE',desc:'Promotion remains separate from global best and live.',diff:'Candidate digest frozen; live target unavailable.',evidence:'Recomputed evidence exists; historical metric and natural outcomes unavailable.',execution:'No supported FuguNano apply receipt; no browser-side apply.',artifacts:'Evidence dossier concept only.',actions:['Export evidence packet']};
+    }
+    renderInspector();
+  }));
+  document.querySelectorAll('[data-inspector-tab]').forEach(tab=>tab.addEventListener('click',()=>{inspectorTab=tab.dataset.inspectorTab;setInspectorTab();}));
+  document.querySelectorAll('[data-toast]').forEach(btn=>btn.addEventListener('click',()=>showToast(btn.dataset.toast)));
+  document.getElementById('themeToggle').addEventListener('click',()=>{
+    document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark';
+    requestAnimationFrame(drawEdges);
+  });
+  document.getElementById('motionToggle').addEventListener('click',e=>{
+    const on=!document.documentElement.classList.toggle('sim-reduced-motion');
+    e.currentTarget.textContent=`Motion: ${on?'on':'reduced'}`;
+    e.currentTarget.setAttribute('aria-pressed',String(!on));
+  });
+  window.addEventListener('resize',()=>requestAnimationFrame(drawEdges));
+  const mapUnitsData = [
+    { id:'U1', label:'files 1–6', status:'done', value:'0.61' },
+    { id:'U2', label:'files 7–13', status:'done', value:'0.44' },
+    { id:'U3', label:'files 14–19', status:'failed', value:'0.12' },
+    { id:'U4', label:'files 20–25', status:'timeout', value:'—' },
+    { id:'U5', label:'files 26–31', status:'pending', value:'—' },
+    { id:'U6', label:'files 32–37', status:'done', value:'0.58' },
+  ];
+  function unitBadge(status) {
+    return { done:['✓ done','key-best'], failed:['× failed','key-failed'], timeout:['! timeout','key-unknown'], pending:['○ pending','key-active'] }[status];
+  }
+  function renderMapUnits() {
+    const wrap = document.getElementById('mapUnits'); wrap.textContent = '';
+    mapUnitsData.forEach(u => {
+      const [label, cls] = unitBadge(u.status);
+      const card = el('div','node ' + (u.status==='failed' ? 'failed' : u.status==='timeout' ? 'unknown' : ''));
+      card.style.cursor='default'; card.style.minHeight='84px';
+      card.append(el('div','node-top'), el('div','node-title', u.id + ' · ' + u.label));
+      const status = el('div','node-sub'); status.className = 'node-sub ' + cls; status.textContent = label;
+      card.append(status, el('div','node-value', 'metric ' + u.value));
+      wrap.append(card);
+    });
+    const terminalStates = ['done','failed','timeout'];
+    const returned = mapUnitsData.filter(u => terminalStates.includes(u.status)).length;
+    const total = mapUnitsData.length;
+    const allTerminal = returned === total;
+    const note = document.getElementById('barrierNote');
+    note.innerHTML = '';
+    const strong = el('strong', null, 'JOIN BARRIER');
+    const detail = el('span', null, `${returned}/${total} units returned a terminal state. ${allTerminal ? 'Barrier satisfied — reduce may run.' : 'Reduce is blocked until every dispatched unit returns done, failed, timeout, or censored.'}`);
+    note.append(strong, detail);
+    const btn = document.getElementById('forceReduceBtn');
+    btn.disabled = !allTerminal;
+    const verdict = document.getElementById('reduceVerdict');
+    const reduceDetail = document.getElementById('reduceDetail');
+    if (!allTerminal) {
+      verdict.textContent = 'BLOCKED · barrier open';
+      verdict.style.color = 'var(--text-danger)';
+      reduceDetail.textContent = 'A pending unit means the true worst case is unknown. No pass rate is computed while the barrier is open.';
+    } else {
+      const failedOrTimeout = mapUnitsData.filter(u => u.status !== 'done').length;
+      verdict.textContent = failedOrTimeout > 0 ? 'INCONCLUSIVE · unit failures present' : 'AGGREGATED · ready for sampled verify';
+      verdict.style.color = failedOrTimeout > 0 ? 'var(--text-winner)' : 'var(--text-accent)';
+      const worstUnit = mapUnitsData.slice().sort((a, b) => (a.value === '—' ? -1 : parseFloat(a.value)) - (b.value === '—' ? -1 : parseFloat(b.value)))[0];
+      reduceDetail.textContent = `${total - failedOrTimeout}/${total} units done. Reduce never upgrades a failed or timed-out unit to a pass; independent verify samples the worst unit (${worstUnit.id}) plus one random unit before promotion.`;
+    }
+  }
+  document.querySelectorAll('#topologyModes [data-topology]').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('#topologyModes [data-topology]').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+    const mode = btn.dataset.topology;
+    document.getElementById('topologySingle').style.display = mode === 'single' ? 'block' : 'none';
+    document.getElementById('topologyBatch').style.display = mode === 'batch' ? 'block' : 'none';
+    document.getElementById('topologyMapreduce').style.display = mode === 'mapreduce' ? 'block' : 'none';
+    if (mode === 'mapreduce') renderMapUnits();
+  }));
+  document.getElementById('forceReduceBtn').addEventListener('click', () => showToast('Reduce ran on terminal units only · prototype does not mutate evidence'));
+
+  renderManaged(); renderSequence(); renderInspector(); setInspectorTab(); renderMapUnits();
+</script>
+</body>
+</html>

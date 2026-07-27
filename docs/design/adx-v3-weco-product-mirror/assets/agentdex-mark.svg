@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" role="img" aria-label="AgentDex">
+  <title>AgentDex hex mark</title>
+  <path d="M12 2l8.66 5v10L12 22l-8.66-5V7L12 2z" stroke="#A6E22E" stroke-width="1.6"></path>
+  <path d="M12 7l4.33 2.5v5L12 17l-4.33-2.5v-5L12 7z" fill="#A6E22E" opacity=".25"></path>
+</svg>

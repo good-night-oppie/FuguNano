@@ -35,3 +35,9 @@ __pycache__/
 .specstory/
 .serena/
 .vscode/
+
+# Third-party trademark asset used only as a local design reference in
+# docs/design/adx-v3-weco-product-mirror/index.html. Deliberately NOT published
+# to this public repo; the page renders with a missing-image placeholder.
+# tc-fugu-11, 2026-07-27 — flip this if the owner clears redistribution.
+docs/design/adx-v3-weco-product-mirror/assets/weco-logo.svg

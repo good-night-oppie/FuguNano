@@ -1,0 +1,53 @@
+{
+  "errors": [],
+  "viewports": {
+    "desktop": {
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "scrollHeight": 1470,
+      "bodyText": 2699,
+      "managedVisible": true,
+      "promoteDisabled": true,
+      "retryDisabled": true,
+      "errors": [],
+      "screenshot": "/home/admin/gh/fugu-nano/docs/design/adx-v3-weco-product-mirror/screenshots/desktop.png",
+      "noBodyHorizontalOverflow": true
+    },
+    "tablet": {
+      "scrollWidth": 768,
+      "clientWidth": 768,
+      "scrollHeight": 1988,
+      "bodyText": 2699,
+      "managedVisible": true,
+      "promoteDisabled": true,
+      "retryDisabled": true,
+      "errors": [],
+      "screenshot": "/home/admin/gh/fugu-nano/docs/design/adx-v3-weco-product-mirror/screenshots/tablet.png",
+      "noBodyHorizontalOverflow": true
+    },
+    "mobile": {
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "scrollHeight": 2852,
+      "bodyText": 2687,
+      "managedVisible": true,
+      "promoteDisabled": true,
+      "retryDisabled": true,
+      "errors": [],
+      "screenshot": "/home/admin/gh/fugu-nano/docs/design/adx-v3-weco-product-mirror/screenshots/mobile.png",
+      "noBodyHorizontalOverflow": true
+    }
+  },
+  "interactions": {
+    "nodeSelection": "Candidate · semantic scorer",
+    "inspectorEvidenceVisible": true,
+    "importedVisible": true,
+    "importedSelection": "Snapshot · best",
+    "promotionVisible": true,
+    "promotionDisabled": true,
+    "retryDisabled": true,
+    "themeToggle": "dark->light",
+    "motionReduced": true,
+    "errors": []
+  }
+}
