@@ -72,6 +72,17 @@ export class NodeCommandRunner implements CommandRunner {
         });
       });
 
+      // A child may exit before draining stdin — a bad flag, missing auth, an
+      // immediate crash, or simply an answer it produced without reading. That
+      // surfaces as EPIPE on this pipe, and an unhandled 'error' event on a
+      // stream takes down the whole process; it is NOT a rejected promise.
+      // child.on('error') above does not cover it: that fires for spawn
+      // failures on the ChildProcess, not for writes to its stdin pipe.
+      //
+      // Swallow it deliberately. The child's exit code, delivered via 'close',
+      // is the authority on whether the dispatch failed — a write we could not
+      // finish is subordinate to that verdict, never a separate failure.
+      child.stdin.on('error', () => {});
       if (options.stdin !== undefined) child.stdin.write(options.stdin);
       child.stdin.end();
     });

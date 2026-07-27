@@ -76,4 +76,19 @@ describe('NodeCommandRunner', () => {
       new NodeCommandRunner().run('definitely-not-a-real-binary-xyz', []),
     ).rejects.toBeInstanceOf(Error);
   });
+
+  // Prompt-bearing harnesses pipe on stdin, so a child that dies early is a
+  // routine event, not an exotic one: a bad flag, missing auth, or an answer
+  // produced without reading. Without a stdin 'error' listener the resulting
+  // EPIPE is an unhandled stream error, which kills the process outright — this
+  // test does not merely fail without the listener, it takes the worker down.
+  it('reports the exit code when the child never drains stdin', async () => {
+    // 1 MiB is far past the 64 KiB pipe buffer, so the write cannot be absorbed
+    // and must still be in flight when the child's read end closes.
+    const result = await new NodeCommandRunner().run(node, ['-e', 'process.exit(3)'], {
+      stdin: 'x'.repeat(1024 * 1024),
+    });
+
+    expect(result.code).toBe(3);
+  });
 });

@@ -104,10 +104,14 @@ describe('FugueCcHarness', () => {
 });
 
 describe('CodexHarness', () => {
-  it('dispatch builds `codex exec --model <model> <prompt>`', async () => {
+  it('dispatch builds `codex exec --model <model>` and pipes the prompt on stdin', async () => {
     const runner = new FakeRunner(res({ stdout: 'ok' }));
     await new CodexHarness(runner).dispatch({ agent: 'gpt-5.5', prompt: 'review this' });
-    expect(runner.calls[0]?.args).toEqual(['exec', '--model', 'gpt-5.5', 'review this']);
+    expect(runner.calls[0]?.args).toEqual(['exec', '--model', 'gpt-5.5']);
+    expect(runner.calls[0]?.options?.stdin).toBe('review this\n');
+    // The security property, not an incidental consequence: argv reaches
+    // /proc/<pid>/cmdline, so a prompt carrying a diff must never appear there.
+    expect(runner.calls[0]?.args).not.toContain('review this');
   });
 
   it('health uses --version exit code', async () => {
@@ -121,14 +125,8 @@ describe('CodexHarness', () => {
       agent: 'gpt-5.5',
       prompt: 'review this',
     });
-    expect(runner.calls[0]?.args).toEqual([
-      'exec',
-      '-c',
-      'mcp_servers={}',
-      '--model',
-      'gpt-5.5',
-      'review this',
-    ]);
+    expect(runner.calls[0]?.args).toEqual(['exec', '-c', 'mcp_servers={}', '--model', 'gpt-5.5']);
+    expect(runner.calls[0]?.options?.stdin).toBe('review this\n');
   });
 
   it('passes timeout options to the runner', async () => {

@@ -124,6 +124,8 @@ writeExecutable(join(tmp, "codex"), [
   "#!/usr/bin/env node",
   "const fs = require('node:fs');",
   `fs.writeFileSync(${JSON.stringify(codexCalled)}, 'ARGV: ' + process.argv.slice(2).join(' ') + '\\n');`,
+  // codex takes the prompt on stdin now — capture it after the argv line.
+  `fs.appendFileSync(${JSON.stringify(codexCalled)}, fs.readFileSync(0, 'utf8'));`,
   "process.stdout.write('VERDICT: ACCEPTED\\n');",
 ]);
 process.env.FUGUE_CODEX = join(tmp, "codex");
@@ -131,9 +133,17 @@ run(dispatch, ["gpt-5.5", "--harness", "codex", "--prompt-file", promptFile]);
 suite.ok("codex harness → codex exec --model <model>", () =>
   readFileSync(codexCalled, "utf8").includes("ARGV: exec --model gpt-5.5"),
 );
-suite.ok("codex harness: prompt passed as arg", () =>
+// Was "prompt passed as arg", which pinned a leak as a contract: argv is
+// readable from /proc/<pid>/cmdline by any same-uid process for the child's
+// whole lifetime, and a review prompt carries the diff under review. The
+// prompt must still reach the child — just never through argv.
+suite.ok("codex harness: prompt reaches the child on stdin", () =>
   readFileSync(codexCalled, "utf8").includes("custom prompt content"),
 );
+suite.ok("codex harness: prompt never appears in argv", () => {
+  const [argvLine = ""] = readFileSync(codexCalled, "utf8").split("\n");
+  return !argvLine.includes("custom prompt content");
+});
 run(dispatch, [
   "gpt-5.5",
   "--harness",

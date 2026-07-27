@@ -825,7 +825,13 @@ describe('fugue CLI', () => {
       );
       await writeFile(
         codex,
-        ['#!/usr/bin/env bash', `echo "ARGV: $*" > "${codexCalled}"`, ''].join('\n'),
+        [
+          '#!/usr/bin/env bash',
+          `echo "ARGV: $*" > "${codexCalled}"`,
+          // codex takes the prompt on stdin now; capture it alongside argv.
+          `cat >> "${codexCalled}"`,
+          '',
+        ].join('\n'),
         'utf8',
       );
       await writeFile(
@@ -1242,6 +1248,8 @@ describe('fugue CLI', () => {
         [
           '#!/usr/bin/env bash',
           `echo "ARGV: $*" > "${codexCalled}"`,
+          // codex takes the prompt on stdin now; capture it alongside argv.
+          `cat >> "${codexCalled}"`,
           'printf "VERDICT: ACCEPTED\\n"',
           '',
         ].join('\n'),
@@ -1282,6 +1290,8 @@ describe('fugue CLI', () => {
         [
           '#!/usr/bin/env bash',
           `echo "ARGV: $*" > "${codexCalled}"`,
+          // codex takes the prompt on stdin now; capture it alongside argv.
+          `cat >> "${codexCalled}"`,
           'printf "VERDICT: ACCEPTED\\n"',
           '',
         ].join('\n'),
@@ -1422,6 +1432,8 @@ describe('fugue CLI', () => {
         [
           '#!/usr/bin/env bash',
           `echo "ARGV: $*" > "${codexCalled}"`,
+          // codex takes the prompt on stdin now; capture it alongside argv.
+          `cat >> "${codexCalled}"`,
           'printf "VERDICT: ACCEPTED\\n"',
           '',
         ].join('\n'),
@@ -1445,6 +1457,8 @@ describe('fugue CLI', () => {
         [
           '#!/usr/bin/env bash',
           `echo "ARGV: $*" > "${codexCalled}"`,
+          // codex takes the prompt on stdin now; capture it alongside argv.
+          `cat >> "${codexCalled}"`,
           'printf "NO_NEWLINE"',
           '',
         ].join('\n'),
@@ -4646,7 +4660,8 @@ describe('fugue CLI', () => {
         [
           '#!/usr/bin/env bash',
           `printf 'codex:%s\\n' "$3" >> "${calls}"`,
-          `printf '%s\\n' "$4" >> "${prompts}"`,
+          // codex reads the prompt from stdin, so there is no $4 to capture.
+          `cat >> "${prompts}"`,
           "printf '# stub plan\\n'",
           '',
         ].join('\n'),
@@ -5106,7 +5121,8 @@ describe('fugue CLI', () => {
         codexBin,
         [
           '#!/usr/bin/env bash',
-          'prompt="${@: -1}"',
+          // codex reads the prompt from stdin, not from a trailing argv slot.
+          'prompt="$(cat)"',
           "outfile=$(printf '%s' \"$prompt\" | sed -n 's/.*write to \\([^*]*\\)\\*\\*.*/\\1/p' | head -1)",
           'mkdir -p "$(dirname "$outfile")"',
           'printf "# salvaged plan\\n" > "$outfile"',
@@ -5205,7 +5221,8 @@ describe('fugue CLI', () => {
         [
           '#!/usr/bin/env bash',
           `printf 'codex-argv:%s\\n' "$*" >> "${calls}"`,
-          'prompt="${@: -1}"',
+          // codex reads the prompt from stdin; the last argv element is the model.
+          'prompt="$(cat)"',
           `printf '%s\\n' "$prompt" >> "${prompts}"`,
           "printf '# arg plan\\n'",
           '',
