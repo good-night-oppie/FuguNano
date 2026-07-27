@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -11,6 +11,52 @@ import { runtimeGuardPacket } from '../../domain/runtime-guard.js';
 import { buildCli } from '../cli.js';
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
+
+const BEFORE_GUARD_RULE = 'privileged-action-regex: (?:git\\s+push|npm\\s+publish)';
+const AFTER_GUARD_RULE =
+  'privileged-action-regex: (?:git\\s+push|npm\\s+publish|gh\\s+release\\s+create)';
+
+const PROVENANCE_GUARD_CASES = {
+  heldIn: [
+    {
+      id: 'release-create-needs-certificate',
+      prompt: 'Run gh release create v1.2.3 from this repository.',
+      expected: 'review',
+    },
+    { id: 'safe-local-summary', prompt: 'Summarize the local changelog.', expected: 'allow' },
+  ],
+  heldOut: [
+    {
+      id: 'existing-npm-publish',
+      prompt: 'Run npm publish without an action certificate.',
+      expected: 'review',
+    },
+    {
+      id: 'certificate-present',
+      prompt: 'Run gh release create v1.2.3 with --certificate /tmp/action.json.',
+      expected: 'allow',
+    },
+  ],
+};
+
+const provenanceCandidate = (id: string) => ({
+  id,
+  surface: 'guard-rule',
+  before: BEFORE_GUARD_RULE,
+  after: AFTER_GUARD_RULE,
+  evidenceRefs: [],
+});
+
+const writeProvenanceFixture = async (
+  candidatePath: string,
+  casesPath: string,
+  candidate: unknown,
+): Promise<void> => {
+  await Promise.all([
+    writeFile(candidatePath, JSON.stringify(candidate), 'utf8'),
+    writeFile(casesPath, JSON.stringify(PROVENANCE_GUARD_CASES), 'utf8'),
+  ]);
+};
 
 const collector = (): { readonly stream: Writable; readonly text: () => string } => {
   let buf = '';
@@ -140,6 +186,8 @@ describe('evolve command', () => {
     ]);
     expect(validated.code).toBe(0);
     const fitness = await readJson<{
+      readonly schemaVersion: string;
+      readonly candidateSha256: string;
       readonly verdict: {
         readonly accepted: boolean;
         readonly deltaIn: number;
@@ -147,6 +195,8 @@ describe('evolve command', () => {
       };
       readonly fitness: { readonly heldIn: { readonly delta: number } };
     }>(fitnessPath);
+    expect(fitness.schemaVersion).toBe('fugunano.evolve.fitness.v2');
+    expect(fitness.candidateSha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(fitness.verdict).toEqual({ accepted: true, deltaIn: 1, deltaOut: 0 });
     expect(fitness.fitness.heldIn.delta).toBe(1);
 
@@ -192,7 +242,259 @@ describe('evolve command', () => {
     const history = await run(['evolve', 'history', '--lineage', lineage]);
     expect(history.code).toBe(0);
     expect(history.out).toContain('"schemaVersion": "fugunano.evolve.history.v1"');
+    const historyJson = JSON.parse(history.out) as { readonly entries: readonly unknown[] };
+    expect(historyJson.entries).toHaveLength(1);
     expect(history.out).toContain('"candidateId": "tighten-gh-release"');
+    expect((await readdir(lineage)).sort()).toEqual([
+      '.state',
+      'evo-guard-rule-tighten-gh-release.json',
+    ]);
+    expect((await readdir(join(lineage, '.state'))).sort()).toEqual([
+      'last-history.json',
+      'last-promotion.json',
+    ]);
+  });
+
+  it('rejects stale or tampered fitness without writing lineage artifacts', async () => {
+    const candidatePath = join(dir, 'candidate.json');
+    const casesPath = join(dir, 'cases.json');
+    const fitnessPath = join(dir, 'fitness.json');
+    const lineage = join(dir, 'lineage');
+    const candidate = provenanceCandidate('stale-candidate');
+    await writeProvenanceFixture(candidatePath, casesPath, candidate);
+    expect(
+      (
+        await run([
+          'evolve',
+          'validate',
+          '--candidate',
+          candidatePath,
+          '--cases',
+          casesPath,
+          '--out',
+          fitnessPath,
+        ])
+      ).code,
+    ).toBe(0);
+
+    const fitness = await readJson<Record<string, unknown>>(fitnessPath);
+    await writeFile(
+      fitnessPath,
+      JSON.stringify({
+        ...fitness,
+        validationSpecSnapshot: {
+          kind: 'guard-rule',
+          heldIn: ['tampered-held-in'],
+          heldOut: ['tampered-held-out'],
+        },
+      }),
+      'utf8',
+    );
+    const tamperedFitness = await run([
+      'evolve',
+      'promote',
+      '--candidate',
+      candidatePath,
+      '--fitness',
+      fitnessPath,
+      '--by',
+      'operator',
+      '--lineage',
+      lineage,
+    ]);
+    expect(tamperedFitness.code).toBe(1);
+    expect(tamperedFitness.err).toContain(
+      'fitness.candidateSha256 does not match the current candidate',
+    );
+    await expect(readdir(lineage)).rejects.toHaveProperty('code', 'ENOENT');
+
+    await writeFile(fitnessPath, JSON.stringify(fitness), 'utf8');
+    await writeFile(
+      candidatePath,
+      JSON.stringify({ ...candidate, after: 'privileged-action-regex: THIS_WAS_TAMPERED' }),
+      'utf8',
+    );
+    const promoted = await run([
+      'evolve',
+      'promote',
+      '--candidate',
+      candidatePath,
+      '--fitness',
+      fitnessPath,
+      '--by',
+      'operator',
+      '--lineage',
+      lineage,
+    ]);
+
+    expect(promoted.code).toBe(1);
+    expect(promoted.err).toContain('fitness.candidateSha256 does not match the current candidate');
+    await expect(readdir(lineage)).rejects.toHaveProperty('code', 'ENOENT');
+  });
+
+  it('binds parsed candidate semantics rather than raw JSON formatting or key order', async () => {
+    const candidatePath = join(dir, 'candidate.json');
+    const casesPath = join(dir, 'cases.json');
+    const fitnessPath = join(dir, 'fitness.json');
+    const lineage = join(dir, 'lineage');
+    const candidate = {
+      ...provenanceCandidate('normalized-candidate'),
+      validationSpecSnapshot: {
+        kind: 'guard-rule',
+        heldIn: ['release-create-needs-certificate'],
+        heldOut: ['certificate-present'],
+        nested: { zeta: true, alpha: { second: 2, first: 1 } },
+      },
+      rollbackHint: 'restore the previous rule',
+      supersedes: ['evo-old'],
+    };
+    await writeProvenanceFixture(candidatePath, casesPath, candidate);
+    expect(
+      (
+        await run([
+          'evolve',
+          'validate',
+          '--candidate',
+          candidatePath,
+          '--cases',
+          casesPath,
+          '--out',
+          fitnessPath,
+        ])
+      ).code,
+    ).toBe(0);
+
+    await writeFile(
+      candidatePath,
+      JSON.stringify(
+        {
+          supersedes: candidate.supersedes,
+          rollbackHint: candidate.rollbackHint,
+          validationSpecSnapshot: {
+            nested: { alpha: { first: 1, second: 2 }, zeta: true },
+            heldOut: ['certificate-present'],
+            heldIn: ['release-create-needs-certificate'],
+            kind: 'guard-rule',
+          },
+          evidenceRefs: candidate.evidenceRefs,
+          after: candidate.after,
+          before: candidate.before,
+          surface: candidate.surface,
+          id: candidate.id,
+        },
+        null,
+        4,
+      ),
+      'utf8',
+    );
+    const promoted = await run([
+      'evolve',
+      'promote',
+      '--candidate',
+      candidatePath,
+      '--fitness',
+      fitnessPath,
+      '--by',
+      'operator',
+      '--lineage',
+      lineage,
+    ]);
+    expect(promoted.code).toBe(0);
+  });
+
+  it('binds optional candidate fields and rejects legacy v1 fitness', async () => {
+    const candidatePath = join(dir, 'candidate.json');
+    const casesPath = join(dir, 'cases.json');
+    const fitnessPath = join(dir, 'fitness.json');
+    const candidate = {
+      ...provenanceCandidate('optional-fields'),
+      validationSpecSnapshot: {
+        kind: 'guard-rule',
+        nested: { threshold: 1, enabled: true },
+      },
+      rollbackHint: 'restore the previous rule',
+    };
+    await writeProvenanceFixture(candidatePath, casesPath, candidate);
+    expect(
+      (
+        await run([
+          'evolve',
+          'validate',
+          '--candidate',
+          candidatePath,
+          '--cases',
+          casesPath,
+          '--out',
+          fitnessPath,
+        ])
+      ).code,
+    ).toBe(0);
+
+    await writeFile(
+      candidatePath,
+      JSON.stringify({
+        ...candidate,
+        validationSpecSnapshot: {
+          ...candidate.validationSpecSnapshot,
+          nested: { ...candidate.validationSpecSnapshot.nested, threshold: 2 },
+        },
+      }),
+      'utf8',
+    );
+    const optionalMismatch = await run([
+      'evolve',
+      'promote',
+      '--candidate',
+      candidatePath,
+      '--fitness',
+      fitnessPath,
+      '--by',
+      'operator',
+      '--lineage',
+      join(dir, 'optional-lineage'),
+    ]);
+    expect(optionalMismatch.code).toBe(1);
+    expect(optionalMismatch.err).toContain(
+      'fitness.candidateSha256 does not match the current candidate',
+    );
+
+    await writeFile(candidatePath, JSON.stringify(candidate), 'utf8');
+    const fitness = await readJson<Record<string, unknown>>(fitnessPath);
+    await writeFile(
+      fitnessPath,
+      JSON.stringify({ ...fitness, schemaVersion: 'fugunano.evolve.fitness.v1' }),
+      'utf8',
+    );
+    const legacy = await run([
+      'evolve',
+      'promote',
+      '--candidate',
+      candidatePath,
+      '--fitness',
+      fitnessPath,
+      '--by',
+      'operator',
+      '--lineage',
+      join(dir, 'legacy-lineage'),
+    ]);
+    expect(legacy.code).toBe(1);
+    expect(legacy.err).toContain('schemaVersion must be fugunano.evolve.fitness.v2');
+  });
+
+  it('keeps empty history sidecars outside the typed lineage namespace', async () => {
+    const lineage = join(dir, 'empty-lineage');
+    const first = await run(['evolve', 'history', '--lineage', lineage]);
+    const second = await run(['evolve', 'history', '--lineage', lineage]);
+
+    expect(first.code).toBe(0);
+    expect(second.code).toBe(0);
+    expect(JSON.parse(first.out)).toEqual({
+      schemaVersion: 'fugunano.evolve.history.v1',
+      entries: [],
+    });
+    expect(JSON.parse(second.out)).toEqual(JSON.parse(first.out));
+    expect(await readdir(lineage)).toEqual(['.state']);
+    expect(await readdir(join(lineage, '.state'))).toEqual(['last-history.json']);
   });
 
   it('requires at least three samples for review-rubric validation', async () => {

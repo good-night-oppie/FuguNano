@@ -65,10 +65,30 @@ describe('FsLineageStore', () => {
     expect(isOk(result)).toBe(true);
   });
 
-  it('returns typed errors for missing or invalid entries', async () => {
+  it('ignores exactly the two known legacy root sidecars', async () => {
+    const fs = new MemoryFileSystem(clock);
+    const root = '/repo/.fugunano/evolution';
+    const store = new FsLineageStore(fs, root);
+    const validEntry = entry('evo-valid');
+    await store.put(validEntry);
+    await fs.write(`${root}/last-promotion.json`, JSON.stringify(validEntry));
+    await fs.write(
+      `${root}/last-history.json`,
+      JSON.stringify({
+        schemaVersion: 'fugunano.evolve.history.v1',
+        entries: [validEntry],
+      }),
+    );
+
+    const listed = await store.list();
+    expect(isOk(listed)).toBe(true);
+    if (listed.ok) expect(listed.value.map((item) => item.id)).toEqual(['evo-valid']);
+  });
+
+  it('returns typed errors for missing or unknown invalid entries', async () => {
     const fs = new MemoryFileSystem(clock);
     const store = new FsLineageStore(fs, '/repo/.fugunano/evolution');
-    await fs.write('/repo/.fugunano/evolution/bad.json', '{"id":""}');
+    await fs.write('/repo/.fugunano/evolution/unexpected.json', '{"id":""}');
 
     const missing = await store.get('missing');
     expect(isErr(missing)).toBe(true);

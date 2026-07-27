@@ -45,8 +45,12 @@ export class FsLineageStore {
   }
 
   async list(): Promise<Result<readonly EvolutionLineageEntry[], LineageStoreError>> {
+    // Backward-compatibility shim for roots polluted by pre-.state sidecars.
     const names = (await this.fs.list(this.rootDir))
-      .filter((name) => name.endsWith('.json'))
+      .filter(
+        (name) =>
+          name.endsWith('.json') && name !== 'last-history.json' && name !== 'last-promotion.json',
+      )
       .sort();
     const entries: EvolutionLineageEntry[] = [];
     for (const name of names) {
