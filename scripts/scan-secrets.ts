@@ -54,6 +54,19 @@ const readText = (file) => {
   }
 };
 
+// A scanner hit must never reproduce what it matched. This output lands in
+// terminal scrollback, agent pane snapshots, and GitHub Actions logs — all
+// durable, all readable by more people than the file was. Location + detector
+// is enough to fix the problem; the value adds nothing but a second copy.
+//
+// Deliberately NOT reported: a digest of the match (a stable unsalted digest on
+// a public surface is a confirmation oracle for a guessed value) and the match
+// length (exact key length is provider-identifying).
+const hit = (detector, file, lineNumber) => {
+  console.log(`  ✗ ${detector}  ${file}:${String(lineNumber)}`);
+  failed = true;
+};
+
 for (const file of files) {
   const abs = join(root, file);
   if (!existsSync(abs) || !statSync(abs).isFile()) continue;
@@ -61,10 +74,7 @@ for (const file of files) {
   if (text === null) continue;
   const lines = text.split(/\r?\n/u);
   lines.forEach((line, index) => {
-    if (secretPattern.test(line)) {
-      console.log(`  ✗ suspected key  ${file}:${String(index + 1)}:${line}`);
-      failed = true;
-    }
+    if (secretPattern.test(line)) hit("suspected key", file, index + 1);
   });
 }
 
@@ -81,10 +91,7 @@ for (const file of files) {
       .replace(/"?[ \t]*$/u, "");
     if (value.length === 0 || (value.startsWith("<") && value.endsWith(">")))
       return;
-    console.log(
-      `  ✗ key not a placeholder  ${file}:${String(index + 1)}:${line}`,
-    );
-    failed = true;
+    hit("key not a placeholder", file, index + 1);
   });
 }
 

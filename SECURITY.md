@@ -8,8 +8,8 @@ This workflow orchestrates several model providers and **will touch API keys**. 
 - The repo only tracks `orchestration/fugue-cc/provider.config.example`, whose `key=` values are always `<...>` placeholders.
 - `.gitignore` ignores `**/.fugue-cc/provider.config`, `*secrets*.env`, `.env*`.
 - Every commit/push passes three gates:
-  1. `npm run scan` / `scripts/scan-secrets.ts` — plaintext key fingerprints (`sk-`/`tp-`/zhipu format) + `provider.config*`'s `key=` must be a placeholder.
-  2. `gitleaks` (`.gitleaks.toml`) — scans the full git history.
+  1. `npm run scan` / `scripts/scan-secrets.ts` — plaintext key fingerprints (`sk-`/`tp-`/zhipu format) + `provider.config*`'s `key=` must be a placeholder. Hits report `file:line` and the detector name only: never the matched text, never a digest of it, never its length. Scanner output persists in terminal scrollback, agent pane snapshots and public Actions logs, so a hit that quoted the secret would copy it onto every one of them. Pinned by `npm run test:scripts`.
+  2. `gitleaks` (`.gitleaks.toml`) — scans the full git history. **Note:** gitleaks runs on the same two surfaces and, in `.pre-commit-config.yaml`, runs *before* `scan-secrets` — and its own default output is not redacted here. Gate 1's redaction does not cover gate 2.
   3. CI's `secret-scan` job runs both; red blocks the merge.
 - Enable locally: `pipx install pre-commit && pre-commit install`, and it scans automatically on commit.
 
