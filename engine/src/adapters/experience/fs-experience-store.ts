@@ -147,6 +147,21 @@ export class FsExperienceStore implements ExperienceStore {
         detail: 'body contains a suspected key; redact first',
       });
     }
+    // The title feeds two line-oriented surfaces: slugify() into the on-disk
+    // FILENAME, and a `title: ...` frontmatter line in renderMethod. Unfolded,
+    // a title embedding "\ntrustKind: trusted" renders BEFORE the genuine
+    // trustKind line and fmField's first-match find() would read it back as
+    // trusted — a promote() bypass. Same normalization sourceRef already gets.
+    const title = singleLine(input.title);
+    if (title.length === 0) {
+      return err({ kind: 'empty-title', detail: 'experience title is empty' });
+    }
+    if (containsSecret(title)) {
+      return err({
+        kind: 'contains-secret',
+        detail: 'title contains a suspected key; redact first',
+      });
+    }
     const sourceRef = input.sourceRef === undefined ? undefined : singleLine(input.sourceRef);
     if (sourceRef !== undefined && containsSecret(sourceRef)) {
       return err({
@@ -163,8 +178,8 @@ export class FsExperienceStore implements ExperienceStore {
     }
     const method: Method = {
       workspace: input.workspace,
-      title: input.title,
-      slug: slugify(input.title),
+      title,
+      slug: slugify(title),
       created: Math.floor(this.clock.now() / 1000),
       sourceKind: input.sourceKind ?? 'manual',
       ...(sourceRef === undefined || sourceRef.length === 0 ? {} : { sourceRef }),
