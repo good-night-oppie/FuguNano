@@ -48,8 +48,17 @@ const pinned = /^[^@]+@[0-9a-f]{40}$/u;
 const isRegistryRef = (ref) =>
   !ref.startsWith("./") && !ref.startsWith("docker://");
 
+// A `key: value` whose unquoted value contains `: ` is not valid YAML — GitHub
+// rejects the whole file in 0s ("workflow file issue"), no job starts, and
+// every gate declared in it silently stops running. `- name: pins (every
+// uses: is a SHA)` shipped exactly this way and went unseen while the fork's
+// Actions were dormant. No YAML parser is available here, so the check is
+// narrow and targets the shape that actually occurred.
+const unquotedColon = /^\s*(?:-\s+)?(?:name|run|if):\s+(?![|>"'&*])\S.*?:\s/u;
+
 let unpinned = 0;
 let checked = 0;
+let malformed = 0;
 
 for (const file of files) {
   const path = join(workflowDir, file);
@@ -57,6 +66,12 @@ for (const file of files) {
   const lines = readFileSync(path, "utf8").split(/\r?\n/u);
 
   lines.forEach((line, index) => {
+    if (unquotedColon.test(line)) {
+      console.log(
+        `  ✗ ${rel}:${String(index + 1)}: unquoted value contains ": " — quote it or YAML rejects the file`,
+      );
+      malformed += 1;
+    }
     const match = usesLine.exec(line);
     if (match === null) return;
     const ref = match[1] ?? "";
@@ -66,6 +81,13 @@ for (const file of files) {
     console.log(`  ✗ ${rel}:${String(index + 1)}: ${ref} is not a full commit SHA`);
     unpinned += 1;
   });
+}
+
+if (malformed > 0) {
+  console.log(
+    `✗ check-workflows: ${String(malformed)} line(s) would fail the YAML parse before any job runs.`,
+  );
+  process.exit(1);
 }
 
 if (unpinned > 0) {

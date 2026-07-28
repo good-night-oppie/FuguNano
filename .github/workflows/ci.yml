@@ -43,7 +43,7 @@ jobs:
         run: npm run lint:launchers
       - name: Docs match code (README ↔ fuguectl subcommands/counts)
         run: npm run check:docs
-      - name: Workflow action pins (every uses: is a full commit SHA)
+      - name: "Workflow action pins (every uses: is a full commit SHA)"
         run: npm run check:workflows
 
   node:

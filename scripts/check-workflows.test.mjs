@@ -83,6 +83,32 @@ suite.ok(
   () => check(join(makeTempDir(), "does-not-exist")).status === 2,
 );
 
+// A step name containing a bare `uses:` breaks the YAML parse — GitHub fails
+// the run in 0s with "workflow file issue" and NO job ever starts, so every
+// other gate in the file silently stops protecting anything. This shipped
+// undetected because the fork's Actions were dormant; the pin gate is the
+// only thing that reads these files locally, so it owns the check.
+suite.ok(
+  "an unquoted colon in a step name fails",
+  () =>
+    check(
+      fixture(
+        "colon-in-name",
+        `jobs:\n  a:\n    steps:\n      - name: Workflow action pins (every uses: is a SHA)\n        run: echo hi\n`,
+      ),
+    ).status === 1,
+);
+suite.ok(
+  "the same name quoted passes",
+  () =>
+    check(
+      fixture(
+        "colon-quoted",
+        `jobs:\n  a:\n    steps:\n      - name: "Workflow action pins (every uses: is a SHA)"\n        run: echo hi\n`,
+      ),
+    ).status === 0,
+);
+
 // The repository itself must satisfy the gate.
 suite.ok("this repo is fully pinned", () => {
   const result = run(process.execPath, [runTs, gate]);
