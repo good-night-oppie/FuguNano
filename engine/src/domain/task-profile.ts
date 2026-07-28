@@ -104,7 +104,7 @@ export const parseTaskProfile = (raw: string): TaskProfile => {
     throw invalid('repo must be lowercase owner/name');
   }
   const pr = record['pr'];
-  if (typeof pr !== 'number' || !Number.isInteger(pr) || pr < 1) {
+  if (typeof pr !== 'number' || !Number.isInteger(pr) || pr < 1 || pr > Number.MAX_SAFE_INTEGER) {
     throw invalid('pr must be a positive integer');
   }
   const headSha = record['head_sha'];

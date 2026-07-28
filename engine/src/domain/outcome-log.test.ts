@@ -53,8 +53,17 @@ describe('canonical ids — frozen formulas', () => {
     expect(computeRouteId(taskId)).toBe(h(`pr-review-v1\0${taskId}`));
     const r = computeRouteId(taskId);
     expect(computeAttemptId(r, 'codex')).toBe(h(`${r}\0codex`));
-    expect(computeSignalId(r, 'thread-9', 'resolved')).toBe(h(`${r}thread-9resolved`));
+    expect(computeSignalId(r, 'thread-9', 'resolved')).toBe(
+      h(`pr-review-signal-v1\0${r}\0thread-9\0resolved`),
+    );
     expect(computeFinalId(r)).toBe(h(`pr-review-outcome-v1\0${r}`));
+  });
+
+  it('signal id delimiters prevent variable-length collisions', () => {
+    const r = 'R';
+    const a = computeSignalId(r, '12', '3APPROVED');
+    const b = computeSignalId(r, '123', 'APPROVED');
+    expect(a).not.toBe(b);
   });
 
   it('distinct inputs give distinct ids', () => {

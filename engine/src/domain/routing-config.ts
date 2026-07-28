@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { assertNoSecretMaterial, OutcomeLogError } from './outcome-log.js';
+import { OutcomeLogError } from './outcome-log.js';
 import { isValidCapability, WORKER_LINEAGES } from './review-vocab.js';
+import { containsSecretMaterial } from './secret-fingerprint.js';
 
 /**
  * Plain-JSON routing config for the AgentDex PR-review slice
@@ -231,15 +232,16 @@ const validateCandidate = (value: unknown, index: number): CandidateConfig => {
   }
   // A credential pasted into argv would otherwise be accepted and handed to
   // spawn(), i.e. into /proc/<pid>/cmdline, readable by every same-uid
-  // process. Rethrown through invalid() so the kind stays INVALID_EVENT: a
-  // bad config value is caller fault (invalid_input, exit 2), not store
-  // trouble (state_error, exit 74) — and the tripwire's message already
-  // names only the field path, never the match.
-  try {
-    assertNoSecretMaterial(argvStrings, `candidates[${index}].argv`);
-  } catch (error) {
-    throw invalid((error as OutcomeLogError).message);
-  }
+  // process. Use the 15-pattern union (secret-fingerprint), not the narrower
+  // outcome-log 6-pattern set — most credential shapes otherwise reach spawn().
+  // Rethrown through invalid() so the kind stays INVALID_EVENT: a bad config
+  // value is caller fault (invalid_input, exit 2), not store trouble
+  // (state_error, exit 74) — and the message names only the field path.
+  argvStrings.forEach((value, j) => {
+    if (containsSecretMaterial(value)) {
+      throw invalid(`credential-shaped value at candidates[${index}].argv[${j}]`);
+    }
+  });
   const capabilities = record['capabilities'];
   if (!Array.isArray(capabilities) || capabilities.length === 0) {
     throw invalid(`candidates[${index}].capabilities must be a non-empty array`);

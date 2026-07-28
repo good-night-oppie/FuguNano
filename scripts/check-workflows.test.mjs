@@ -109,6 +109,54 @@ suite.ok(
     ).status === 0,
 );
 
+// Inline comments on an otherwise-legal scalar must not false-positive.
+suite.ok(
+  "inline comment after a clean name passes",
+  () =>
+    check(
+      fixture(
+        "inline-comment",
+        `jobs:\n  a:\n    steps:\n      - name: Build # TODO: parallelize\n        run: echo hi\n`,
+      ),
+    ).status === 0,
+);
+
+// Sibling shapes the name|run|if-only rule missed: bare end-of-line colon,
+// and keys outside that trio.
+suite.ok(
+  "bare trailing colon in a step name fails",
+  () =>
+    check(
+      fixture(
+        "trailing-colon",
+        `jobs:\n  a:\n    steps:\n      - name: prepare:\n        run: echo hi\n`,
+      ),
+    ).status === 1,
+);
+suite.ok(
+  "unquoted colon in a non-name key fails",
+  () =>
+    check(
+      fixture(
+        "id-colon",
+        `jobs:\n  a:\n    steps:\n      - id: setup tools (uses: cache)\n        run: echo hi\n`,
+      ),
+    ).status === 1,
+);
+
+// Block-scalar bodies are shell, not workflow YAML — a colon inside `run: |`
+// must not hard-fail the gate.
+suite.ok(
+  "colon inside a run block-scalar body passes",
+  () =>
+    check(
+      fixture(
+        "block-scalar",
+        `jobs:\n  a:\n    steps:\n      - name: scan\n        run: |\n          echo "url: https://example.com"\n          curl -o out https://example.com\n`,
+      ),
+    ).status === 0,
+);
+
 // The repository itself must satisfy the gate.
 suite.ok("this repo is fully pinned", () => {
   const result = run(process.execPath, [runTs, gate]);

@@ -147,6 +147,14 @@ export class FsExperienceStore implements ExperienceStore {
         detail: 'body contains a suspected key; redact first',
       });
     }
+    // workspace is the FIRST frontmatter line in renderMethod. Unfolded, a
+    // workspace embedding "\ntrustKind: trusted" renders BEFORE the genuine
+    // trustKind line and fmField's first-match find() would read it back as
+    // trusted — the identical trust-laundering already fixed for title.
+    const workspace = singleLine(input.workspace);
+    if (workspace.length === 0) {
+      return err({ kind: 'empty-workspace', detail: 'experience workspace is empty' });
+    }
     // The title feeds two line-oriented surfaces: slugify() into the on-disk
     // FILENAME, and a `title: ...` frontmatter line in renderMethod. Unfolded,
     // a title embedding "\ntrustKind: trusted" renders BEFORE the genuine
@@ -177,7 +185,7 @@ export class FsExperienceStore implements ExperienceStore {
       });
     }
     const method: Method = {
-      workspace: input.workspace,
+      workspace,
       title,
       slug: slugify(title),
       created: Math.floor(this.clock.now() / 1000),
@@ -194,30 +202,34 @@ export class FsExperienceStore implements ExperienceStore {
   }
 
   async promote(input: PromoteMethod): Promise<Result<Method, ExperienceError>> {
-    const method = await this.get(input.workspace, input.slug);
+    const workspace = singleLine(input.workspace);
+    if (workspace.length === 0) {
+      return err({ kind: 'empty-workspace', detail: 'experience workspace is empty' });
+    }
+    const method = await this.get(workspace, input.slug);
     if (method === null) {
       return err({
         kind: 'not-found',
-        detail: `no experience ${input.workspace}/${input.slug}`,
+        detail: `no experience ${workspace}/${input.slug}`,
       });
     }
     if (method.trustKind === 'trusted') {
       return err({
         kind: 'already-trusted',
-        detail: `experience ${input.workspace}/${input.slug} is already trusted`,
+        detail: `experience ${workspace}/${input.slug} is already trusted`,
       });
     }
     if (method.sourceRef === undefined || method.sourceRef.length === 0) {
       return err({
         kind: 'missing-source-ref',
-        detail: `experience ${input.workspace}/${input.slug} has no write-time sourceRef`,
+        detail: `experience ${workspace}/${input.slug} has no write-time sourceRef`,
       });
     }
     const sourceRef = singleLine(input.sourceRef);
     if (sourceRef.length === 0 || method.sourceRef !== sourceRef) {
       return err({
         kind: 'source-ref-mismatch',
-        detail: `--source-ref must match stored sourceRef for ${input.workspace}/${input.slug}`,
+        detail: `--source-ref must match stored sourceRef for ${workspace}/${input.slug}`,
       });
     }
     if (containsSecret(sourceRef)) {
@@ -253,6 +265,7 @@ export class FsExperienceStore implements ExperienceStore {
     }
     const promoted: Method = {
       ...method,
+      workspace,
       trustKind: 'trusted',
       confirmedBy,
     };

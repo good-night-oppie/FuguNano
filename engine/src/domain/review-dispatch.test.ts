@@ -102,6 +102,22 @@ describe('cohort_index admission', () => {
     expect(readOutcomeLog(logPath).events[0]!['cohort_index']).toBeNull();
   });
 
+  it('empty cohort_index string → invalid_input exit 2, zero side effects', async () => {
+    const marker = path.join(dir, 'empty-cohort-spawn');
+    writeConfig([
+      {
+        name: 'codex',
+        argv: [fixture('empty-c.sh', `cat > /dev/null; touch ${marker}; echo "{}"`)],
+      },
+    ]);
+    const { machine, exitCode } = await run(PROFILE, 'static', deps(), '');
+    expect(exitCode).toBe(2);
+    expect(machine['status']).toBe('invalid_input');
+    expect(machine['reason']).toMatch(/cohort_index must be a decimal integer/);
+    expect(fs.existsSync(logPath)).toBe(false);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it('non-integer cohort_index → invalid_input exit 2, zero side effects', async () => {
     writeConfig([{ name: 'codex', argv: [fixture('x.sh', okScript('codex'))] }]);
     for (const raw of ['3.5', 'abc']) {
@@ -170,6 +186,39 @@ describe('cohort_index admission', () => {
     expect(exitCode).toBe(7);
     expect(machine['status']).toBe('no_eligible_agent');
     expect(machine['cohort_index']).toBe(5);
+    expect(fs.existsSync(logPath)).toBe(false);
+  });
+
+  it('no_eligible out-of-range cohort_index → invalid_input exit 2, not exit 7', async () => {
+    writeConfig([
+      { name: 'claude-code', argv: [fixture('z2.sh', okScript('claude-code'))], lineage: 'claude' },
+    ]);
+    const { machine, exitCode } = await run(
+      { ...PROFILE, author_lineage: 'claude' },
+      'static',
+      deps(),
+      '999',
+    );
+    expect(exitCode).toBe(2);
+    expect(machine['status']).toBe('invalid_input');
+    expect(machine['reason']).toMatch(/1\.\.50/);
+    expect(fs.existsSync(logPath)).toBe(false);
+  });
+
+  it('no_eligible parity-mismatched cohort_index → invalid_input exit 2, not exit 7', async () => {
+    writeConfig([
+      { name: 'claude-code', argv: [fixture('z3.sh', okScript('claude-code'))], lineage: 'claude' },
+    ]);
+    // 4 is even → thompson; policy_arm static is a parity miss.
+    const { machine, exitCode } = await run(
+      { ...PROFILE, author_lineage: 'claude' },
+      'static',
+      deps(),
+      '4',
+    );
+    expect(exitCode).toBe(2);
+    expect(machine['status']).toBe('invalid_input');
+    expect(machine['reason']).toMatch(/parity/);
     expect(fs.existsSync(logPath)).toBe(false);
   });
 });

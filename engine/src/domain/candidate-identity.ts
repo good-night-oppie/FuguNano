@@ -23,6 +23,17 @@ export interface CandidateIdentity {
   readonly argvSha256: string;
 }
 
+/** Hard cap on argv[0] bytes digested into memory. Generous; the tripwire is unbounded read. */
+export const MAX_ARGV0_DIGEST_BYTES = 256 * 1024 * 1024;
+
+/** Test-only override for MAX_ARGV0_DIGEST_BYTES. Production never sets this. */
+let argv0DigestBytesCapForTest: number | undefined;
+
+/** Test seam: shrink the digest cap without a multi-GB fixture. Pass undefined to clear. */
+export const setArgv0DigestBytesCapForTest = (bytes: number | undefined): void => {
+  argv0DigestBytesCapForTest = bytes;
+};
+
 const sha256Hex = (bytes: Buffer | string): string =>
   createHash('sha256').update(bytes).digest('hex');
 
@@ -32,6 +43,28 @@ const errnoCode = (error: unknown): string => {
     if (typeof code === 'string' && code.length > 0) return code;
   }
   return 'EIO';
+};
+
+/**
+ * Digest argv[0] after a regular-file + size-cap gate. Never throws: non-regular
+ * (FIFO/dir/device) → ENOTSUP; oversize → EFBIG; other fs errors → errno.
+ * Skipping the open on non-regular paths is load-bearing — open(2) on a FIFO
+ * with no writer blocks forever and hangs the one-shot CLI.
+ */
+const digestArgv0 = (argv0Realpath: string): { sha256: string | null; error?: string } => {
+  try {
+    const st = fs.statSync(argv0Realpath);
+    if (!st.isFile()) {
+      return { sha256: null, error: 'ENOTSUP' };
+    }
+    const cap = argv0DigestBytesCapForTest ?? MAX_ARGV0_DIGEST_BYTES;
+    if (st.size > cap) {
+      return { sha256: null, error: 'EFBIG' };
+    }
+    return { sha256: sha256Hex(fs.readFileSync(argv0Realpath)) };
+  } catch (error) {
+    return { sha256: null, error: errnoCode(error) };
+  }
 };
 
 /** Compute the observed identity for one candidate. Never throws. */
@@ -44,21 +77,14 @@ export const computeCandidateIdentity = (candidate: CandidateConfig): CandidateI
     argv0Realpath = argv0;
   }
 
-  let argv0Sha256: string | null = null;
-  let argv0DigestError: string | undefined;
-  try {
-    argv0Sha256 = sha256Hex(fs.readFileSync(argv0Realpath));
-  } catch (error) {
-    argv0Sha256 = null;
-    argv0DigestError = errnoCode(error);
-  }
+  const digested = digestArgv0(argv0Realpath);
 
   return {
     candidateId: candidate.name,
     argv0Realpath,
-    argv0Sha256,
+    argv0Sha256: digested.sha256,
     argvSha256: sha256Hex(JSON.stringify(candidate.argv)),
-    ...(argv0DigestError !== undefined ? { argv0DigestError } : {}),
+    ...(digested.error !== undefined ? { argv0DigestError: digested.error } : {}),
   };
 };
 
@@ -81,11 +107,7 @@ export const computeCandidateIdentities = (
 
     let cached = digestByRealpath.get(argv0Realpath);
     if (cached === undefined) {
-      try {
-        cached = { sha256: sha256Hex(fs.readFileSync(argv0Realpath)) };
-      } catch (error) {
-        cached = { sha256: null, error: errnoCode(error) };
-      }
+      cached = digestArgv0(argv0Realpath);
       digestByRealpath.set(argv0Realpath, cached);
     }
 

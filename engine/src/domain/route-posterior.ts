@@ -117,22 +117,26 @@ const assertNonEmpty = (value: string, name: string): void => {
   }
 };
 
+/**
+ * Range (1..50) + parity cross-check for an admission-time cohort index.
+ * Shared by the no-eligible early return and buildRouteDecided (defence in depth).
+ */
+export const assertValidCohortIndex = (cohortIndex: number | null, policyArm: PolicyArm): void => {
+  if (cohortIndex === null) return;
+  if (!Number.isInteger(cohortIndex) || cohortIndex < 1 || cohortIndex > 50) {
+    throw new OutcomeLogError('INVALID_EVENT', 'cohort_index must be an integer in 1..50 or null');
+  }
+  if (armForCohortIndex(cohortIndex) !== policyArm) {
+    throw new OutcomeLogError('INVALID_EVENT', 'cohort_index parity does not match policy_arm');
+  }
+};
+
 /** Build a `route.decided` event; policy arm and replay seed are mandatory. */
 export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
   if (!POLICY_ARMS.includes(input.policyArm)) {
     throw new OutcomeLogError('INVALID_EVENT', `unknown policy_arm ${String(input.policyArm)}`);
   }
-  if (input.cohortIndex !== null) {
-    if (!Number.isInteger(input.cohortIndex) || input.cohortIndex < 1 || input.cohortIndex > 50) {
-      throw new OutcomeLogError(
-        'INVALID_EVENT',
-        'cohort_index must be an integer in 1..50 or null',
-      );
-    }
-    if (armForCohortIndex(input.cohortIndex) !== input.policyArm) {
-      throw new OutcomeLogError('INVALID_EVENT', 'cohort_index parity does not match policy_arm');
-    }
-  }
+  assertValidCohortIndex(input.cohortIndex, input.policyArm);
   assertNonEmpty(input.candidateId, 'candidateId');
   assertNonEmpty(input.configSha256, 'configSha256');
   assertNonEmpty(input.routedAt, 'routedAt');

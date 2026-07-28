@@ -17,7 +17,12 @@ import {
   readOutcomeLog,
   resolveOutcomeLogPath,
 } from './outcome-log.js';
-import { buildRouteDecided, POLICY_ARMS, type PolicyArm } from './route-posterior.js';
+import {
+  buildRouteDecided,
+  POLICY_ARMS,
+  assertValidCohortIndex,
+  type PolicyArm,
+} from './route-posterior.js';
 import { loadRoutingConfig } from './routing-config.js';
 import {
   assertLiteralLoopbackOnly,
@@ -137,12 +142,13 @@ const errorOutcome = (
 };
 
 /**
- * Parse the optional `--cohort-index` CLI string. undefined/'' → null
- * (non-cohort); otherwise a decimal integer string. Range/parity checks live
- * in buildRouteDecided so a mismatch never appends or spawns.
+ * Parse the optional `--cohort-index` CLI string. undefined (flag genuinely
+ * absent) → null (non-cohort). Empty string is a scripting slip (`--cohort-index
+ * ""` / expanded empty var) and MUST fail closed — never silently dispatch as
+ * non-cohort traffic. Range/parity checks live in assertValidCohortIndex.
  */
 const parseCohortIndexRaw = (cohortIndexRaw: string | undefined): number | null => {
-  if (cohortIndexRaw === undefined || cohortIndexRaw === '') return null;
+  if (cohortIndexRaw === undefined) return null;
   const trimmed = cohortIndexRaw.trim();
   if (!/^(0|[1-9][0-9]*)$/u.test(trimmed)) {
     throw new OutcomeLogError('INVALID_EVENT', 'cohort_index must be a decimal integer');
@@ -171,6 +177,9 @@ export const runReviewDispatch = async (
       throw new OutcomeLogError('INVALID_EVENT', 'policy_arm must be "static" or "thompson"');
     }
     const policyArm = policyArmRaw as PolicyArm;
+    // Range + parity BEFORE eligibleReviewers: the no_eligible early return
+    // must not echo an unvalidated cohort_index into sealed machine JSON.
+    assertValidCohortIndex(cohortIndex, policyArm);
 
     const profile = parseTaskProfile(taskRaw);
     const loaded = loadRoutingConfig(deps.env);
@@ -285,6 +294,13 @@ export const runReviewDispatch = async (
           verdict: a.verdict,
           detail: a.detail,
         })),
+        // Surfaced whenever the terminal append failed after the agent ran —
+        // the caller must see the true COMPLETED/EFFECT_UNKNOWN state AND that
+        // the receipt could not be persisted. null when emission succeeded.
+        terminal_event_error:
+          result.terminalEmission !== null && result.terminalEmission.emitted === false
+            ? result.terminalEmission.reason
+            : null,
       },
       result.exitCode,
     );

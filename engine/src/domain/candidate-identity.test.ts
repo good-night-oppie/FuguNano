@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -7,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   computeCandidateIdentities,
   computeCandidateIdentity,
+  MAX_ARGV0_DIGEST_BYTES,
+  setArgv0DigestBytesCapForTest,
   type CandidateIdentity,
 } from './candidate-identity.js';
 import type { CandidateConfig } from './routing-config.js';
@@ -34,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setArgv0DigestBytesCapForTest(undefined);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -121,6 +125,55 @@ describe('computeCandidateIdentity', () => {
     expect(after.argv0Realpath).toBe(before.argv0Realpath);
     expect(after.argv0Sha256).not.toBe(before.argv0Sha256);
     expect(after.argv0Sha256).not.toBeNull();
+  });
+
+  // FIFO open(2) blocks forever with no writer. A regression that re-opens
+  // without the isFile() gate hangs the suite — hence the tight timeout.
+  const itFifo = process.platform === 'win32' ? it.skip : it;
+  itFifo(
+    'FIFO argv[0] → null + ENOTSUP promptly (does not hang on open)',
+    () => {
+      const fifo = path.join(dir, 'argv0.fifo');
+      const mk = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+      expect(mk.status).toBe(0);
+      const started = Date.now();
+      const id = computeCandidateIdentity(candidate('codex', [fifo]));
+      expect(Date.now() - started).toBeLessThan(1500);
+      expect(id.argv0Sha256).toBeNull();
+      expect(id.argv0DigestError).toBe('ENOTSUP');
+    },
+    2000,
+  );
+
+  it('oversize argv[0] → null + EFBIG without reading the whole file', () => {
+    const file = path.join(dir, 'big.sh');
+    fs.writeFileSync(file, 'x'.repeat(64));
+    fs.chmodSync(file, 0o755);
+    expect(MAX_ARGV0_DIGEST_BYTES).toBe(256 * 1024 * 1024);
+    setArgv0DigestBytesCapForTest(16);
+    const id = computeCandidateIdentity(candidate('codex', [file]));
+    expect(id.argv0Sha256).toBeNull();
+    expect(id.argv0DigestError).toBe('EFBIG');
+  });
+
+  it('memoized path also gates non-regular / oversize', () => {
+    if (process.platform !== 'win32') {
+      const fifo = path.join(dir, 'shared.fifo');
+      expect(spawnSync('mkfifo', [fifo]).status).toBe(0);
+      const fifoIds = computeCandidateIdentities([
+        candidate('a', [fifo]),
+        candidate('b', [fifo, '--x']),
+      ]);
+      expect(fifoIds[0]!.argv0DigestError).toBe('ENOTSUP');
+      expect(fifoIds[1]!.argv0DigestError).toBe('ENOTSUP');
+    }
+    const big = path.join(dir, 'shared-big.sh');
+    fs.writeFileSync(big, 'y'.repeat(32));
+    fs.chmodSync(big, 0o755);
+    setArgv0DigestBytesCapForTest(8);
+    const ids = computeCandidateIdentities([candidate('a', [big]), candidate('b', [big, '--x'])]);
+    expect(ids[0]!.argv0DigestError).toBe('EFBIG');
+    expect(ids[1]!.argv0DigestError).toBe('EFBIG');
   });
 });
 

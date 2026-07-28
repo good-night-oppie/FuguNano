@@ -375,7 +375,11 @@ export const explainRecallMatch = (
   };
 };
 
-export type ExperienceErrorKind = 'empty-body' | 'empty-title' | 'contains-secret';
+export type ExperienceErrorKind =
+  | 'empty-body'
+  | 'empty-title'
+  | 'empty-workspace'
+  | 'contains-secret';
 export type ExperiencePromotionErrorKind =
   | 'not-found'
   | 'already-trusted'

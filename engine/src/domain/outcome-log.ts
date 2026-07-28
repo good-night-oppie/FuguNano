@@ -94,7 +94,7 @@ export const computeSignalId = (
   routeId: string,
   sourceObjectId: string,
   canonicalSourceState: string,
-): string => sha256(`${routeId}${sourceObjectId}${canonicalSourceState}`);
+): string => sha256(`pr-review-signal-v1\0${routeId}\0${sourceObjectId}\0${canonicalSourceState}`);
 
 export const computeFinalId = (routeId: string): string =>
   sha256(`pr-review-outcome-v1\0${routeId}`);

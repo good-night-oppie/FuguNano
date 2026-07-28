@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import {
   appendOutcomeEvent,
   computeAttemptId,
+  OutcomeLogError,
   OUTCOME_LOG_FORMAT,
   type OutcomeEvent,
 } from './outcome-log.js';
@@ -64,6 +65,11 @@ export interface AttemptRecord {
   readonly detail: string;
 }
 
+/** Whether the dispatch.terminal event was persisted. */
+export type TerminalEmission =
+  | { readonly emitted: true }
+  | { readonly emitted: false; readonly reason: string };
+
 export interface DispatchResult {
   readonly state: DispatchState;
   readonly exitCode: number;
@@ -72,6 +78,12 @@ export interface DispatchResult {
   /** Parsed machine JSON from the completed agent, if any. */
   readonly resultJson: Record<string, unknown> | null;
   readonly attempts: ReadonlyArray<AttemptRecord>;
+  /**
+   * Status of the dispatch.terminal append. Present on every path that
+   * attempted emission (i.e. non-empty ranked pool). A failed append must
+   * NOT rewrite state to STATE_ERROR — the review may already have posted.
+   */
+  readonly terminalEmission: TerminalEmission | null;
 }
 
 export interface DispatchOptions {
@@ -106,6 +118,8 @@ interface SpawnOutcome {
   readonly detail: string;
   readonly stdout: string;
 }
+
+const CHILD_LIFECYCLE_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 
 /**
  * Run one candidate. Never-spawned requires BOTH: a spawn-level error of the
@@ -145,10 +159,41 @@ const runCandidate = (
 
     let settled = false;
     let stdout = '';
+
+    // Ctrl-C / SIGTERM / SIGHUP on the CLI must reach the detached group —
+    // otherwise grandchildren orphan under ppid=1 and a review keeps running
+    // after the one-shot CLI is gone. Handlers are removed on settle so
+    // repeated dispatches do not accumulate listeners.
+    const lifecycleHandlers = new Map<NodeJS.Signals, () => void>();
+    for (const signal of CHILD_LIFECYCLE_SIGNALS) {
+      const handler = (): void => {
+        killProcessGroup(child, 'SIGKILL', useProcessGroup);
+        for (const s of CHILD_LIFECYCLE_SIGNALS) {
+          const h = lifecycleHandlers.get(s);
+          if (h !== undefined) process.removeListener(s, h);
+        }
+        // Re-raise so the default disposition applies (exit / terminate).
+        process.kill(process.pid, signal);
+      };
+      lifecycleHandlers.set(signal, handler);
+      process.once(signal, handler);
+    }
+
     const settle = (outcome: SpawnOutcome): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      for (const s of CHILD_LIFECYCLE_SIGNALS) {
+        const h = lifecycleHandlers.get(s);
+        if (h !== undefined) process.removeListener(s, h);
+      }
+      // Reap the group on EVERY settle path when detached: a candidate that
+      // backgrounds a grandchild and exits 0 would otherwise leave it under
+      // ppid=1. EFFECT_UNKNOWN / completed verdicts are unchanged — this only
+      // signals descendants after the direct child has already settled.
+      if (useProcessGroup) {
+        killProcessGroup(child, 'SIGKILL', useProcessGroup);
+      }
       resolve(outcome);
     };
 
@@ -175,6 +220,15 @@ const runCandidate = (
       stdout += chunk.toString('utf8');
     });
 
+    // Reap on 'exit' (not 'close'): once the leader is fully reaped, kill(-pgid)
+    // returns ESRCH even while grandchildren still run under that historical
+    // PGID. 'exit' fires while the group is still addressable.
+    child.on('exit', () => {
+      if (useProcessGroup) {
+        killProcessGroup(child, 'SIGKILL', useProcessGroup);
+      }
+    });
+
     child.on('close', (code) => {
       settle(
         code === 0
@@ -190,13 +244,17 @@ const runCandidate = (
     child.stdin.end();
   });
 
+/**
+ * Persist the dispatch.terminal event. Never throws: an append failure after
+ * a completed review must not rewrite the caller's view to state_error.
+ */
 const emitTerminal = (
   options: DispatchOptions,
   state: DispatchState,
   actualExecutor: string | null,
   attempts: ReadonlyArray<AttemptRecord>,
-): void => {
-  if (options.logPath === null) return;
+): TerminalEmission => {
+  if (options.logPath === null) return { emitted: true };
   const event: OutcomeEvent = {
     format: OUTCOME_LOG_FORMAT,
     event_type: 'dispatch.terminal',
@@ -211,7 +269,15 @@ const emitTerminal = (
       detail: a.detail,
     })),
   };
-  appendOutcomeEvent(options.logPath, event);
+  try {
+    appendOutcomeEvent(options.logPath, event);
+    return { emitted: true };
+  } catch (error) {
+    if (error instanceof OutcomeLogError) {
+      return { emitted: false, reason: error.kind };
+    }
+    return { emitted: false, reason: 'EIO' };
+  }
 };
 
 /**
@@ -228,6 +294,7 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
       actualExecutor: null,
       resultJson: null,
       attempts: [],
+      terminalEmission: null,
     };
     // Frozen: no route side effects at all — no event is written.
     return result;
@@ -266,7 +333,7 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
         record['attempt_id'] === undefined ||
         record['attempt_id'] === computeAttemptId(options.routeId, candidate.name);
       if (isObject && executorOk && routeOk && attemptOk) {
-        emitTerminal(options, 'COMPLETED', candidate.name, attempts);
+        const terminalEmission = emitTerminal(options, 'COMPLETED', candidate.name, attempts);
         return {
           state: 'COMPLETED',
           exitCode: DISPATCH_EXIT_CODES.COMPLETED,
@@ -274,6 +341,7 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
           actualExecutor: candidate.name,
           resultJson: parsed as Record<string, unknown>,
           attempts,
+          terminalEmission,
         };
       }
       // rc=0 but garbage or mismatched output: the agent RAN — effect unknown.
@@ -288,7 +356,7 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
       };
     }
 
-    emitTerminal(options, 'EFFECT_UNKNOWN', null, attempts);
+    const terminalEmission = emitTerminal(options, 'EFFECT_UNKNOWN', null, attempts);
     return {
       state: 'EFFECT_UNKNOWN',
       exitCode: DISPATCH_EXIT_CODES.EFFECT_UNKNOWN,
@@ -296,10 +364,11 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
       actualExecutor: null,
       resultJson: null,
       attempts,
+      terminalEmission,
     };
   }
 
-  emitTerminal(options, 'DISPATCH_FAILED', null, attempts);
+  const terminalEmission = emitTerminal(options, 'DISPATCH_FAILED', null, attempts);
   return {
     state: 'DISPATCH_FAILED',
     exitCode: DISPATCH_EXIT_CODES.DISPATCH_FAILED,
@@ -307,5 +376,6 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
     actualExecutor: null,
     resultJson: null,
     attempts,
+    terminalEmission,
   };
 };

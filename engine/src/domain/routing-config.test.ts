@@ -199,6 +199,25 @@ describe('schema validation — fail closed', () => {
     expect(err.message).not.toContain('canary0123456789');
   });
 
+  it('rejects a union-only credential shape the 6-pattern outcome-log set misses', () => {
+    // npm_… is in secret-fingerprint's ADDITIONAL set, not outcome-log's six.
+    const canary = `np${'m_'}${'a'.repeat(36)}`;
+    let thrown: unknown;
+    try {
+      parseRoutingConfig(
+        raw(candidateMutant((c) => (c['argv'] = ['/opt/agentdex/bin/review', canary]))),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OutcomeLogError);
+    const err = thrown as OutcomeLogError;
+    expect(err.kind).toBe('INVALID_EVENT');
+    expect(err.message).toMatch(/credential-shaped value at candidates\[0\]\.argv\[1\]/);
+    expect(err.message).not.toContain(canary);
+    expect(err.message).not.toContain('aaaaaaaa');
+  });
+
   it('rejects duplicate candidate names and duplicate priorities', () => {
     expect(() =>
       parseRoutingConfig(
@@ -237,14 +256,18 @@ describe('reserved fields (F4, operator ruling 2026-07-28)', () => {
         if (entry.isDirectory()) walk(full);
         else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
           const text = fs.readFileSync(full, 'utf8');
-          // Property ACCESS (.field / ['field']), not declaration/validation —
-          // routing-config.ts's own schema plumbing is the reservation itself.
-          if (/(\.|\[')(slot_wait_seconds|max_in_flight)\b/u.test(text)) consumers.push(full);
+          // Bare identifier — catches destructuring (`const { max_in_flight } =`)
+          // as well as `.field` / `['field']` access. Producer allowlist is a
+          // SUBSET check: routing-config.ts self-matches via its own literals.
+          if (/\b(slot_wait_seconds|max_in_flight)\b/u.test(text)) consumers.push(full);
         }
       }
     };
     walk(srcRoot);
-    expect(consumers).toStrictEqual([path.join(srcRoot, 'domain', 'routing-config.ts')]);
+    const producer = path.join(srcRoot, 'domain', 'routing-config.ts');
+    const outsiders = consumers.filter((f) => f !== producer);
+    expect(outsiders).toStrictEqual([]);
+    expect(consumers).toContain(producer);
   });
 });
 

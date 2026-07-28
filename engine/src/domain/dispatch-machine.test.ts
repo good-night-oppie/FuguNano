@@ -289,4 +289,68 @@ describe('timeout override', () => {
     },
     15000,
   );
+
+  itNotOnWindows(
+    'reaps grandchildren on normal exit 0 (detached must not orphan)',
+    async () => {
+      const marker = path.join(dir, 'orphan-marker');
+      const result = await dispatchReview(
+        opts(
+          [
+            candidate(
+              'codex',
+              fixture(
+                'bg-exit0.sh',
+                `cat > /dev/null; (sleep 2; touch ${JSON.stringify(marker)}) & echo "{\\"format\\":1,\\"status\\":\\"completed\\",\\"executed_agent\\":\\"codex\\"}"`,
+              ),
+            ),
+          ],
+          { timeoutMs: 4000 },
+        ),
+      );
+      expect(result.state).toBe('COMPLETED');
+      expect(result.actualExecutor).toBe('codex');
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(fs.existsSync(marker)).toBe(false);
+    },
+    10000,
+  );
+
+  it('lifecycle signal handlers do not accumulate across repeated dispatches', async () => {
+    const before = process.listenerCount('SIGTERM');
+    for (let i = 0; i < 5; i += 1) {
+      await dispatchReview(
+        opts([
+          candidate(
+            `c${String(i)}`,
+            fixture(`ok-listen-${String(i)}.sh`, okScript(`c${String(i)}`)),
+          ),
+        ]),
+      );
+    }
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+});
+
+describe('terminal emission survival', () => {
+  it('COMPLETED survives a failed terminal append; emission failure is reported', async () => {
+    // Parent path is a regular file → mkdirSync of its "child" fails closed.
+    const blocker = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(blocker, 'x');
+    const badLog = path.join(blocker, 'outcomes.jsonl');
+    const result = await dispatchReview(
+      opts([candidate('claude', fixture('ok-emit.sh', okScript('claude')))], {
+        logPath: badLog,
+      }),
+    );
+    expect(result.state).toBe('COMPLETED');
+    expect(result.exitCode).toBe(0);
+    expect(result.actualExecutor).toBe('claude');
+    expect(result.resultJson).not.toBeNull();
+    expect(result.terminalEmission?.emitted).toBe(false);
+    if (result.terminalEmission?.emitted === false) {
+      expect(typeof result.terminalEmission.reason).toBe('string');
+      expect(result.terminalEmission.reason.length).toBeGreaterThan(0);
+    }
+  });
 });

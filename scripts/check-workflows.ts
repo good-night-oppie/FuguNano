@@ -48,13 +48,20 @@ const pinned = /^[^@]+@[0-9a-f]{40}$/u;
 const isRegistryRef = (ref) =>
   !ref.startsWith("./") && !ref.startsWith("docker://");
 
-// A `key: value` whose unquoted value contains `: ` is not valid YAML — GitHub
-// rejects the whole file in 0s ("workflow file issue"), no job starts, and
-// every gate declared in it silently stops running. `- name: pins (every
-// uses: is a SHA)` shipped exactly this way and went unseen while the fork's
-// Actions were dormant. No YAML parser is available here, so the check is
-// narrow and targets the shape that actually occurred.
-const unquotedColon = /^\s*(?:-\s+)?(?:name|run|if):\s+(?![|>"'&*])\S.*?:\s/u;
+// A `key: value` whose unquoted value contains `: ` (or ends in a bare `:`)
+// is not valid YAML — GitHub rejects the whole file in 0s ("workflow file
+// issue"), no job starts, and every gate declared in it silently stops
+// running. `- name: pins (every uses: is a SHA)` shipped exactly this way.
+// No YAML parser is available here, so the check is structural:
+//   - any mapping key (not just name|run|if);
+//   - strip a trailing plain-scalar `# comment` before testing so legal
+//     inline comments do not false-positive;
+//   - skip the body of `run: |` / `>` block scalars (those lines are shell,
+//     not workflow YAML).
+const unquotedColon =
+  /^\s*(?:-\s+)?[\w-]+:\s+(?![|>"'&*])\S.*?:(?:\s|$)/u;
+const blockScalarOpen =
+  /^(\s*)(?:-\s+)?[\w-]+:\s*[|>][-+0-9]*\s*(?:#.*)?$/u;
 
 let unpinned = 0;
 let checked = 0;
@@ -65,13 +72,33 @@ for (const file of files) {
   const rel = relative(root, path);
   const lines = readFileSync(path, "utf8").split(/\r?\n/u);
 
+  /** Indent of the key that opened a `|`/`>` block; null when not inside one. */
+  let blockIndent = null;
+
   lines.forEach((line, index) => {
-    if (unquotedColon.test(line)) {
-      console.log(
-        `  ✗ ${rel}:${String(index + 1)}: unquoted value contains ": " — quote it or YAML rejects the file`,
-      );
-      malformed += 1;
+    if (blockIndent !== null) {
+      if (line.length === 0) return; // blank lines stay inside the block
+      const indent = /^(\s*)/u.exec(line)?.[1]?.length ?? 0;
+      if (indent > blockIndent) return; // still in the block body
+      blockIndent = null; // dedented — back to workflow YAML
     }
+
+    const blockOpen = blockScalarOpen.exec(line);
+    if (blockOpen !== null) {
+      blockIndent = blockOpen[1]?.length ?? 0;
+      // The opener itself is valid YAML; do not colon-check it.
+    } else {
+      // Strip a plain-scalar trailing comment before the colon test so
+      // `- name: Build # TODO: parallelize` stays legal.
+      const stripped = line.replace(/\s+#.*$/u, "");
+      if (unquotedColon.test(stripped)) {
+        console.log(
+          `  ✗ ${rel}:${String(index + 1)}: unquoted value contains ": " — quote it or YAML rejects the file`,
+        );
+        malformed += 1;
+      }
+    }
+
     const match = usesLine.exec(line);
     if (match === null) return;
     const ref = match[1] ?? "";

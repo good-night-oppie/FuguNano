@@ -71,6 +71,14 @@ describe('parseTaskProfile', () => {
     for (const bad of [0, -1, 1.5, '7']) {
       expect(() => parseTaskProfile(profile({ pr: bad }))).toThrow(/pr/);
     }
+    // Number.isInteger is true above 2^53, where distinct PR numbers collide
+    // and >= 1e21 renders in exponential form inside the frozen digest preimage.
+    expect(() => parseTaskProfile(profile({ pr: Number.MAX_SAFE_INTEGER + 1 }))).toThrow(/pr/);
+    expect(() => parseTaskProfile(profile({ pr: 1e21 }))).toThrow(/pr/);
+    expect(parseTaskProfile(profile({ pr: Number.MAX_SAFE_INTEGER })).pr).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    expect(parseTaskProfile(profile({ pr: 1 })).pr).toBe(1);
     for (const bad of ['E'.repeat(40), 'e'.repeat(39), 'g'.repeat(40)]) {
       expect(() => parseTaskProfile(profile({ head_sha: bad }))).toThrow(/head_sha/);
     }
