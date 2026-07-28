@@ -50,7 +50,7 @@ export class FsResultStore implements ResultStore {
   async put(key: string, artifacts: readonly Artifact[]): Promise<void> {
     const path = this.pathForKey(key);
     const record: StoredResult = { key, artifacts: [...artifacts] };
-    await this.fs.write(path, `${JSON.stringify(record, null, 2)}\n`);
+    await this.fs.write(path, `${JSON.stringify(record, null, 2)}\n`, { private: true });
   }
 
   async get(key: string): Promise<readonly Artifact[] | null> {

@@ -13,16 +13,18 @@ brew install gitleaks        # or apt
 pipx install pre-commit && pre-commit install   # scans automatically on commit
 ```
 
-## Three Gates (must pass before commit)
+## Gates (must pass before commit)
 
-| Gate    | Command     | What it checks                                                                 |
-| ------- | ----------- | ------------------------------------------------------------------------------ |
-| Secrets | `make scan` | Plaintext key fingerprints + `provider.config*`'s `key=` must be a placeholder |
-| Scripts | `make lint` | Node launcher syntax + no checked-in `.sh` scripts                             |
-| Tests   | `make test` | cn-plugin's node tests                                                         |
-| All     | `make ci`   | The three above run in sequence (= CI equivalent)                              |
+| Gate         | Command                | What it checks                                                                 |
+| ------------ | ---------------------- | ------------------------------------------------------------------------------ |
+| Secrets      | `make scan`            | Plaintext key fingerprints + `provider.config*`'s `key=` must be a placeholder |
+| Supply chain | `make check-workflows` | Every `uses:` in `.github/workflows/` is a full 40-hex commit SHA               |
+| Scripts      | `make lint`            | Node launcher syntax + no checked-in `.sh` scripts                             |
+| Docs         | `make check-docs`      | README/guide claims match the actual subcommands, counts and harness list      |
+| Tests        | `make test`            | cn-plugin, scripts and fuguectl node tests                                     |
+| All          | `make ci`              | The above run in sequence, plus the engine build and suite (= CI equivalent)   |
 
-`make help` lists all targets. CI (`.github/workflows/ci.yml`) runs exactly these three, so if `make ci` is green locally, CI is basically green too.
+`make help` lists all targets. CI (`.github/workflows/ci.yml`) runs the same gates, so if `make ci` is green locally, CI is basically green too.
 
 ## Hard Rules
 

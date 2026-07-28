@@ -100,10 +100,15 @@ repo, and it never runs on push/PR (the fast CI stays renderer-only). Trigger it
 from the repo's **Actions → Package Desktop GUI → Run workflow**, or push a
 `gui-v*` tag; download the `fugunano-studio-macos-arm64` artifact when it's done.
 
-**Locally.** `make gui-package` builds the renderer and runs electron-builder
-(fetched via `npx`, so it isn't a committed dependency) to produce the same app
-under `benchmarks/case-d-gui/desktop/release/`. First `npx` run is slow while it
-downloads electron-builder.
+**Locally.** `make gui-package` builds the renderer and runs electron-builder to
+produce the same app under `benchmarks/case-d-gui/desktop/release/`.
+electron-builder is pinned to an exact version in
+`benchmarks/case-d-gui/desktop/packaging/package-lock.json`; `make gui-package`
+runs `npm ci` there first. The packaging toolchain lives in its own manifest so
+the renderer install — and therefore PR CI — never pays for it, while a release
+artifact still comes from a locked, integrity-checked toolchain instead of
+whatever the registry happens to resolve at build time. First run is slow while
+that install populates.
 
 Either way the app is unsigned — first launch needs a right-click → Open (or
 `xattr -dr com.apple.quarantine "FuguNano Studio.app"`) to clear Gatekeeper.

@@ -29,7 +29,9 @@ export class FsLineageStore {
   async put(entry: EvolutionLineageEntry): Promise<Result<void, LineageStoreError>> {
     const gated = gatePromotion(entry);
     if (!gated.ok) return err({ kind: 'forbidden-promotion', detail: gated.error });
-    await this.fs.write(this.path(entry.id), renderEvolutionLineageEntry(entry));
+    await this.fs.write(this.path(entry.id), renderEvolutionLineageEntry(entry), {
+      private: true,
+    });
     return ok(undefined);
   }
 
@@ -43,8 +45,12 @@ export class FsLineageStore {
   }
 
   async list(): Promise<Result<readonly EvolutionLineageEntry[], LineageStoreError>> {
+    // Backward-compatibility shim for roots polluted by pre-.state sidecars.
     const names = (await this.fs.list(this.rootDir))
-      .filter((name) => name.endsWith('.json'))
+      .filter(
+        (name) =>
+          name.endsWith('.json') && name !== 'last-history.json' && name !== 'last-promotion.json',
+      )
       .sort();
     const entries: EvolutionLineageEntry[] = [];
     for (const name of names) {

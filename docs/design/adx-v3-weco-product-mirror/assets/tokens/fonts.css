@@ -1,0 +1,16 @@
+/* ============================================================
+   AgentDex · Webfonts
+   All three faces are on Google Fonts and load from the Google
+   CDN below. To make the system fully self-contained/offline,
+   drop the .woff2 files into assets/fonts/ and replace this
+   @import with @font-face rules pointing at them.
+   ------------------------------------------------------------
+   --font-display : Chakra Petch  — UI labels, numbers, agent names, brand
+   --font-mono    : IBM Plex Mono — data, stats, trace, code, meta
+   --font-serif   : Bitter        — editorial / evolution flavor moments
+   --font-zh      : Noto Sans SC  — Simplified-Chinese (中文) runs; the
+                    bilingual EN/ZH glossary leads with the English term
+                    and trails the 中文 gloss.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,400;0,500;0,600;0,700;1,400;1,700&family=IBM+Plex+Mono:wght@400;500;600&family=Bitter:ital,wght@0,400;0,600;0,700;1,400;1,700&family=Noto+Sans+SC:wght@400;500;700&display=swap');

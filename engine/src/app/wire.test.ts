@@ -69,6 +69,8 @@ describe('wireCoordinator', () => {
         [
           '#!/bin/sh',
           'printf "%s\\n" "$*" > "$FUGUE_WIRE_CALLS"',
+          // codex takes the prompt on stdin, so capture that too.
+          'cat >> "$FUGUE_WIRE_CALLS"',
           'printf "codex stub\\n"',
           '',
         ].join('\n'),
@@ -96,7 +98,9 @@ describe('wireCoordinator', () => {
       ]);
 
       expect(report.status).toBe('completed');
-      expect(await readFile(calls, 'utf8')).toBe('exec --model gpt-5.5 review it\n');
+      // argv line first, then the stdin body — the prompt must be in the
+      // second, never the first: argv is world-readable via /proc.
+      expect(await readFile(calls, 'utf8')).toBe('exec --model gpt-5.5\nreview it\n');
     } finally {
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;

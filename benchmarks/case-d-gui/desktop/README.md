@@ -37,6 +37,7 @@ desktop/
 │   ├── bridge.ts      # 调 window.fugue (IPC)
 │   ├── geist.css      # Geist tokens (light/dark)
 │   └── logic/         # 状态机 + 命令构造 (复用 case-d fixture)
+├── packaging/         # 打包工具链 (electron-builder 精确锁定, 与渲染进程安装隔离)
 ├── index.html · vite.config.ts · tsconfig.json · package.json
 └── dist/              # vite build 产物 (electron 加载)
 ```

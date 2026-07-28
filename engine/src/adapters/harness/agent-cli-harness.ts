@@ -17,7 +17,13 @@ export { QWEN_CODE_INVOCATION_DESCRIPTOR } from '../../domain/agent-cli-registry
 export const CODEX_INVOCATION_DESCRIPTOR = {
   bin: 'codex',
   subcommand: ['exec'],
-  promptMode: 'positional',
+  // stdin, not positional: an argv-borne prompt is world-readable from
+  // /proc/<pid>/cmdline for the child's whole lifetime, and a review prompt
+  // carries the diff under review. `codex exec --help` (0.144.5): "If not
+  // provided as an argument (or if `-` is used), instructions are read from
+  // stdin." The other descriptors still pass the prompt in argv because their
+  // CLIs' stdin support is unverified — do not flip one without checking.
+  promptMode: 'stdin',
   modelArg: '--model',
   healthCmd: ['--version'],
   failureMode: 'exit-code',

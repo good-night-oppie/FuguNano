@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help install install-cc install-skill verify doctor test test-engine test-engine-ci scan lint check-docs ci ci-clean check gui-install gui gui-test gui-build gui-package
+.PHONY: help install install-cc install-skill verify doctor test test-engine test-engine-ci scan check-workflows lint check-docs build-engine ci ci-clean check hooks gui-install gui gui-test gui-build gui-package
 
 GUI_DIR := benchmarks/case-d-gui/desktop
 
@@ -39,14 +39,30 @@ scan: ## Secret-leak scan (local gate)
 lint: ## Node launcher syntax check
 	npm run lint:launchers
 
+check-workflows: ## Supply-chain gate (every GitHub Action pinned to a full commit SHA)
+	npm run check:workflows
+
 check-docs: ## Docs-drift gate (fuguectl README + Self-Harness guide == actual code)
 	npm run check:docs
 
-ci: scan lint check-docs test test-engine ## Full local CI using installed deps
+# Six fuguectl selftest files black-box the COMPILED engine via
+# engine/dist/cli/main.js (see fuguectl-node-bridge.mjs). Without this,
+# `make ci` grades a stale dist: an engine/src change that is coherent with
+# its own vitest passes locally and only fails in the CI `node` job, which
+# builds first. Mirrors `npm run ci`, which has always included build:engine.
+build-engine: ## Build the engine CLI that the fuguectl shims delegate to
+	npm run build:engine
+
+hooks: ## Install repo git hooks (pre-commit = fast tiny-PR gate, pre-push = full make ci)
+	git config core.hooksPath .githooks
+	chmod +x .githooks/pre-commit .githooks/pre-push
+	@echo "hooks installed: pre-commit (scan+lint+docs+staged engine checks), pre-push (make ci)"
+
+ci: scan check-workflows lint check-docs build-engine test test-engine ## Full local CI using installed deps
 
 check: ci ## Alias for ci
 
-ci-clean: scan lint check-docs test test-engine-ci ## Full clean CI with engine npm ci
+ci-clean: scan check-workflows lint check-docs build-engine test test-engine-ci ## Full clean CI with engine npm ci
 
 gui-install: ## Install FuguNano Studio desktop GUI deps
 	cd $(GUI_DIR) && npm install
@@ -61,4 +77,5 @@ gui-build: ## Typecheck + test + build the GUI renderer (what CI runs)
 	cd $(GUI_DIR) && npm run typecheck && npm test && npm run build
 
 gui-package: ## Package the desktop app locally (unsigned .app + .dmg → release/)
+	cd $(GUI_DIR)/packaging && npm ci
 	cd $(GUI_DIR) && npm run package

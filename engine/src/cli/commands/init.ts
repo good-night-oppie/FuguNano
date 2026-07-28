@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join as joinPath, resolve } from 'node:path';
@@ -96,8 +96,16 @@ export class InitCommand extends Command {
 
     if (!beforeSecrets) {
       if (willWrite) {
-        await mkdir(dirname(secrets), { recursive: true });
-        await writeFile(secrets, secretsTemplate(), { encoding: 'utf8', flag: 'wx' });
+        // Credential files: owner-only from the moment they exist. The
+        // explicit chmod is not redundant with the mode option — `writeFile`
+        // and `mkdir` modes are both masked by the ambient umask.
+        await mkdir(dirname(secrets), { recursive: true, mode: 0o700 });
+        await writeFile(secrets, secretsTemplate(), {
+          encoding: 'utf8',
+          flag: 'wx',
+          mode: 0o600,
+        });
+        await chmod(secrets, 0o600);
         actions.push(`created secrets template: ${secrets}`);
       } else {
         actions.push(`would create secrets template: ${secrets}`);
@@ -110,8 +118,11 @@ export class InitCommand extends Command {
           this.context.stderr.write(`provider example missing: ${providerExample}\n`);
           return 1;
         }
-        await mkdir(dirname(providerConfig), { recursive: true });
+        await mkdir(dirname(providerConfig), { recursive: true, mode: 0o700 });
+        // copyFile carries the SOURCE file's mode, and the tracked example is
+        // world-readable — so this destination must be hardened explicitly.
         await copyFile(providerExample, providerConfig, constants.COPYFILE_EXCL);
+        await chmod(providerConfig, 0o600);
         actions.push(`copied provider config example: ${providerConfig}`);
       } else {
         actions.push(`would copy provider config example: ${providerConfig}`);

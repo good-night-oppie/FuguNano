@@ -124,6 +124,8 @@ writeExecutable(join(tmp, "codex"), [
   "#!/usr/bin/env node",
   "const fs = require('node:fs');",
   `fs.writeFileSync(${JSON.stringify(codexCalled)}, 'ARGV: ' + process.argv.slice(2).join(' ') + '\\n');`,
+  // codex takes the prompt on stdin now — capture it after the argv line.
+  `fs.appendFileSync(${JSON.stringify(codexCalled)}, fs.readFileSync(0, 'utf8'));`,
   "process.stdout.write('VERDICT: ACCEPTED\\n');",
 ]);
 process.env.FUGUE_CODEX = join(tmp, "codex");
@@ -131,9 +133,17 @@ run(dispatch, ["gpt-5.5", "--harness", "codex", "--prompt-file", promptFile]);
 suite.ok("codex harness → codex exec --model <model>", () =>
   readFileSync(codexCalled, "utf8").includes("ARGV: exec --model gpt-5.5"),
 );
-suite.ok("codex harness: prompt passed as arg", () =>
+// Was "prompt passed as arg", which pinned a leak as a contract: argv is
+// readable from /proc/<pid>/cmdline by any same-uid process for the child's
+// whole lifetime, and a review prompt carries the diff under review. The
+// prompt must still reach the child — just never through argv.
+suite.ok("codex harness: prompt reaches the child on stdin", () =>
   readFileSync(codexCalled, "utf8").includes("custom prompt content"),
 );
+suite.ok("codex harness: prompt never appears in argv", () => {
+  const [argvLine = ""] = readFileSync(codexCalled, "utf8").split("\n");
+  return !argvLine.includes("custom prompt content");
+});
 run(dispatch, [
   "gpt-5.5",
   "--harness",
@@ -541,5 +551,424 @@ suite.ok(
       join(tmp, "nope.md"),
     ]).status !== 0,
 );
+
+// ── auto mode (AgentDex R2.4 seam, frozen baseline 2026-07-23) ──────────────
+// Black-box integration: spawn the REAL entrypoints exactly as the AgentDex
+// Python façade will — argv array + TaskProfile on stdin + machine JSON on
+// stdout + frozen exit taxonomy {0,2,7,8,74} + JSONL side effects. Every
+// failure mode must keep the uniform envelope: one parseable JSON object,
+// never prose, never a stack trace.
+import { chmodSync, statSync } from "node:fs";
+
+const fuguectlBin = join(here, "fuguectl");
+const AUTO = ["dispatch", "--auto", "--task-type", "pr-review", "--policy-arm"];
+
+const autoRoot = makeTempDir();
+
+const autoCtx = (name) => {
+  const root = join(autoRoot, name);
+  mkdirSync(root, { recursive: true });
+  return {
+    root,
+    configPath: join(root, "routing.json"),
+    stateDir: join(root, "state"),
+    logPath: join(root, "state", "agentdex", "pr-review-outcomes-v1.jsonl"),
+  };
+};
+
+const reviewer = (ctx, name, bodyLines) => {
+  const file = join(ctx.root, name);
+  writeExecutable(file, ["#!/bin/bash", "cat > /dev/null", ...bodyLines]);
+  chmodSync(file, 0o755);
+  return file;
+};
+
+const okBody = (name) => [
+  `echo "{\\"format\\":1,\\"executed_agent\\":\\"${name}\\",\\"result_ref\\":\\"gh-${name}\\"}"`,
+];
+
+const cand = (name, argv0, { lineage = name, priority = 10 } = {}) => ({
+  name,
+  argv: [argv0],
+  lineage,
+  capabilities: ["pr-review", "lang:*", "risk:*"],
+  static_priority: priority,
+  enabled: true,
+});
+
+const writeRouting = (ctx, candidates) =>
+  writeFileSync(
+    ctx.configPath,
+    JSON.stringify({
+      format: 1,
+      dispatch_timeout_seconds: 5,
+      slot_wait_seconds: 300,
+      max_attempts: 3,
+      max_in_flight: 2,
+      candidates,
+    }),
+  );
+
+const AUTO_PROFILE = {
+  repo: "acme/widgets",
+  pr: 42,
+  head_sha: "a".repeat(40),
+  author_lineage: "human:eddie",
+  languages: ["python"],
+  changed_paths: ["src/app.py"],
+  risk_tags: [],
+};
+
+const autoRun = (ctx, { arm = "static", input, argv, entry = fuguectlBin, env = {} } = {}) =>
+  run(entry, argv ?? [...AUTO, arm, "--json"], {
+    input: input ?? JSON.stringify(AUTO_PROFILE),
+    env: {
+      ...process.env,
+      AGENTDEX_ROUTING_CONFIG: ctx.configPath,
+      XDG_STATE_HOME: ctx.stateDir,
+      ...env,
+    },
+  });
+
+// Envelope discipline: stdout is EXACTLY one newline-terminated JSON object
+// carrying format/status/reason — the property that makes the seam parseable
+// by a dumb caller in every scenario.
+const machineOf = (result) => {
+  if (!result.stdout.endsWith("\n")) return null;
+  const lines = result.stdout.split("\n").filter((l) => l.length > 0);
+  if (lines.length !== 1) return null;
+  try {
+    const m = JSON.parse(lines[0]);
+    return m !== null &&
+      typeof m === "object" &&
+      m.format === 1 &&
+      typeof m.status === "string" &&
+      typeof m.reason === "string"
+      ? m
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+{
+  // 1. static happy path + JSONL discipline
+  const ctx = autoCtx("happy-static");
+  writeRouting(ctx, [cand("codex", reviewer(ctx, "codex.sh", okBody("codex")))]);
+  const res = autoRun(ctx);
+  const m = machineOf(res);
+  suite.ok("auto: static happy path → exit 0 + completed envelope", () =>
+    res.status === 0 &&
+    m !== null &&
+    m.status === "completed" &&
+    m.selected_agent === "codex" &&
+    m.executed_agent === "codex" &&
+    typeof m.attempt_id === "string" &&
+    m.result_ref === "gh-codex" &&
+    typeof m.config_sha256 === "string",
+  );
+  suite.ok("auto: happy path reason is one plain sentence, stderr empty", () =>
+    m !== null && /^Selected codex because .+\.$/.test(m.reason) && res.stderr === "",
+  );
+  const log = readFileSync(ctx.logPath, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+  suite.ok("auto: JSONL holds exactly route.decided then dispatch.terminal", () =>
+    log.length === 2 &&
+    log[0].event_type === "route.decided" &&
+    log[1].event_type === "dispatch.terminal" &&
+    log[1].terminal_state === "COMPLETED",
+  );
+  suite.ok("auto: outcome log is 0600 in a 0700 dir", () =>
+    (statSync(ctx.logPath).mode & 0o777) === 0o600 &&
+    (statSync(join(ctx.stateDir, "agentdex")).mode & 0o777) === 0o700,
+  );
+
+  // 7. exact re-invocation must refuse to re-dispatch (duplicate route)
+  const again = autoRun(ctx);
+  const m2 = machineOf(again);
+  // Fresh OS-random seed → the second route.decided differs in payload, so
+  // the store refuses with DUPLICATE_ID_CONFLICT ("already recorded"); a
+  // pinned-seed replay would hit the duplicate-noop refusal instead. Both
+  // are the same frozen behavior: exit 74, and the agent runs exactly once.
+  suite.ok("auto: re-dispatching the same task → exit 74, refusal, agent not re-run", () =>
+    again.status === 74 &&
+    m2 !== null &&
+    m2.status === "state_error" &&
+    /already recorded|re-dispatch/.test(m2.reason) &&
+    readFileSync(ctx.logPath, "utf8").trimEnd().split("\n").length === 2,
+  );
+}
+
+{
+  // 2. thompson arm: structure of the replay tuple (seed is OS-random by spec)
+  const ctx = autoCtx("happy-thompson");
+  writeRouting(ctx, [
+    cand("codex", reviewer(ctx, "c1.sh", okBody("codex")), { priority: 10 }),
+    cand("claude", reviewer(ctx, "c2.sh", okBody("claude")), { priority: 20 }),
+  ]);
+  const res = autoRun(ctx, { arm: "thompson" });
+  const m = machineOf(res);
+  const decided = JSON.parse(readFileSync(ctx.logPath, "utf8").split("\n")[0]);
+  suite.ok("auto: thompson → exit 0, Thompson sentence, seeded replayable route", () =>
+    res.status === 0 &&
+    m !== null &&
+    /Thompson sampling for this PR\.$/.test(m.reason) &&
+    /^[0-9a-f]{32}$/.test(decided.seed) &&
+    Array.isArray(decided.posteriors) &&
+    decided.posteriors.length === 2 &&
+    decided.posteriors.every((p) => p.alpha === 1 && p.beta === 1),
+  );
+}
+
+{
+  // 3. provably-never-spawned fallback is the ONLY fallback lane
+  const ctx = autoCtx("prestart-fallback");
+  writeRouting(ctx, [
+    cand("codex", join(ctx.root, "missing-binary"), { priority: 10 }),
+    cand("claude", reviewer(ctx, "ok.sh", okBody("claude")), { priority: 20 }),
+  ]);
+  const res = autoRun(ctx);
+  const m = machineOf(res);
+  suite.ok("auto: missing binary falls back; second candidate completes", () =>
+    res.status === 0 &&
+    m !== null &&
+    m.executed_agent === "claude" &&
+    m.attempts.length === 2 &&
+    m.attempts[0].verdict === "never-spawned",
+  );
+}
+
+{
+  // 4/5/6. frozen taxonomy: 7 (no eligible), 7 (dispatch failed), 8 (effect unknown)
+  const same = autoCtx("same-family");
+  writeRouting(same, [cand("claude-code", reviewer(same, "c.sh", okBody("claude-code")), { lineage: "claude" })]);
+  const resSame = autoRun(same, {
+    input: JSON.stringify({ ...AUTO_PROFILE, author_lineage: "claude" }),
+  });
+  const mSame = machineOf(resSame);
+  suite.ok("auto: same-family author → exit 7, frozen sentence, zero side effects", () =>
+    resSame.status === 7 &&
+    mSame !== null &&
+    mSame.reason === "No eligible PR-review agent is available; no agent was started." &&
+    !existsSync(same.logPath),
+  );
+
+  const dead = autoCtx("all-dead");
+  writeRouting(dead, [
+    cand("codex", join(dead.root, "nope-a"), { priority: 10 }),
+    cand("claude", join(dead.root, "nope-b"), { priority: 20 }),
+  ]);
+  const resDead = autoRun(dead);
+  const mDead = machineOf(resDead);
+  suite.ok("auto: every candidate unstartable → exit 7 dispatch_failed", () =>
+    resDead.status === 7 && mDead !== null && mDead.status === "dispatch_failed",
+  );
+
+  const boom = autoCtx("post-spawn");
+  const neverRan = join(boom.root, "second-ran");
+  writeRouting(boom, [
+    cand("codex", reviewer(boom, "boom.sh", ["exit 3"]), { priority: 10 }),
+    cand("claude", reviewer(boom, "mark.sh", [`touch ${neverRan}`, ...okBody("claude")]), { priority: 20 }),
+  ]);
+  const resBoom = autoRun(boom);
+  const mBoom = machineOf(resBoom);
+  suite.ok("auto: post-spawn failure → exit 8, frozen sentence, chain stopped", () =>
+    resBoom.status === 8 &&
+    mBoom !== null &&
+    mBoom.reason === "Agent execution may have started; no fallback or retry was attempted." &&
+    !existsSync(neverRan),
+  );
+  suite.ok("auto: post-spawn failure leaves an EFFECT_UNKNOWN terminal receipt", () => {
+    const events = readFileSync(boom.logPath, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+    return events[1].event_type === "dispatch.terminal" && events[1].terminal_state === "EFFECT_UNKNOWN";
+  });
+}
+
+{
+  // 8. pre-seeded torn JSONL tail: fail closed BEFORE any spawn
+  const ctx = autoCtx("torn-log");
+  const ran = join(ctx.root, "ran");
+  writeRouting(ctx, [cand("codex", reviewer(ctx, "mark.sh", [`touch ${ran}`, ...okBody("codex")]))]);
+  mkdirSync(join(ctx.stateDir, "agentdex"), { recursive: true });
+  writeFileSync(ctx.logPath, '{"torn');
+  const res = autoRun(ctx);
+  const m = machineOf(res);
+  suite.ok("auto: torn outcome log → exit 74 state_error, candidate never ran", () =>
+    res.status === 74 && m !== null && m.status === "state_error" && !existsSync(ran),
+  );
+}
+
+{
+  // 9–16. dummy-proofing: every clumsy invocation keeps the machine envelope
+  const ctx = autoCtx("dummy");
+  writeRouting(ctx, [cand("codex", reviewer(ctx, "ok.sh", okBody("codex")))]);
+  const clumsy = [
+    ["empty stdin", autoRun(ctx, { input: "" })],
+    ["garbage stdin", autoRun(ctx, { input: "hello" })],
+    ["missing --policy-arm", autoRun(ctx, { argv: ["dispatch", "--auto", "--task-type", "pr-review"] })],
+    ["wrong --task-type", autoRun(ctx, { argv: [...AUTO.slice(0, 3), "weekly-report", "--policy-arm", "static"] })],
+    ["unknown policy arm", autoRun(ctx, { arm: "greedy" })],
+  ];
+  suite.ok("auto: clumsy invocations all → exit 2 with the machine envelope", () =>
+    clumsy.every(([, r]) => r.status === 2 && machineOf(r) !== null && machineOf(r).status === "invalid_input"),
+  );
+
+  const noCfg = autoCtx("no-config");
+  const resNoCfg = autoRun(noCfg);
+  const mNoCfg = machineOf(resNoCfg);
+  suite.ok("auto: missing config → exit 2, reason names the config actionably", () =>
+    resNoCfg.status === 2 && mNoCfg !== null && /config/.test(mNoCfg.reason),
+  );
+
+  const resRel = autoRun(ctx, { env: { AGENTDEX_ROUTING_CONFIG: "relative/path.json" } });
+  suite.ok("auto: relative config override → exit 2 machine envelope (R4-1)", () =>
+    resRel.status === 2 && machineOf(resRel) !== null,
+  );
+
+  const bareEnv = { ...process.env, AGENTDEX_ROUTING_CONFIG: ctx.configPath };
+  delete bareEnv.HOME;
+  delete bareEnv.XDG_STATE_HOME;
+  const resBare = run(fuguectlBin, [...AUTO, "static"], {
+    input: JSON.stringify(AUTO_PROFILE),
+    env: bareEnv,
+  });
+  suite.ok("auto: no HOME/XDG at all → exit 2 machine envelope, no crash", () =>
+    resBare.status === 2 && machineOf(resBare) !== null,
+  );
+
+  const local = autoCtx("localhost-config");
+  writeRouting(local, [
+    {
+      ...cand("codex", reviewer(local, "ok.sh", okBody("codex"))),
+      argv: [reviewer(local, "ok2.sh", okBody("codex")), "--endpoint", "http://localhost:3456/v1"],
+    },
+  ]);
+  const resLocal = autoRun(local);
+  const mLocal = machineOf(resLocal);
+  suite.ok("auto: localhost endpoint in config → exit 2, cites the literal rule", () =>
+    resLocal.status === 2 && mLocal !== null && /127\.0\.0\.1 or ::1/.test(mLocal.reason),
+  );
+}
+
+{
+  // 18–20. secret boundary at the subprocess seam
+  const ctx = autoCtx("secret-env");
+  writeRouting(ctx, [cand("codex", reviewer(ctx, "ok.sh", okBody("codex")))]);
+  const canary = "ghp_" + "A1b2C3d4E5".repeat(3);
+  const res = autoRun(ctx, { env: { GITHUB_TOKEN: canary } });
+  suite.ok("auto: env credential canary reaches neither stdout nor the JSONL", () =>
+    res.status === 0 &&
+    !res.stdout.includes(canary) &&
+    !readFileSync(ctx.logPath, "utf8").includes(canary),
+  );
+
+  const leak = autoCtx("secret-result");
+  const skCanary = "sk-" + "canary0123456789".repeat(2);
+  writeRouting(leak, [
+    cand("codex", reviewer(leak, "leak.sh", [
+      `echo "{\\"format\\":1,\\"executed_agent\\":\\"codex\\",\\"result_ref\\":\\"${skCanary}\\"}"`,
+    ])),
+  ]);
+  const resLeak = autoRun(leak);
+  const mLeak = machineOf(resLeak);
+  suite.ok("auto: credential-shaped result_ref is withheld → exit 74, field path only", () =>
+    resLeak.status === 74 &&
+    mLeak !== null &&
+    !resLeak.stdout.includes(skCanary) &&
+    /result_ref/.test(mLeak.reason),
+  );
+
+  const poisonKey = "sk-AAAAAAAAAAAAAAAAAA";
+  const resPoison = autoRun(ctx, {
+    input: JSON.stringify(AUTO_PROFILE).replace("{", `{"${poisonKey}":1,`),
+  });
+  suite.ok("auto: credential-shaped profile key → exit 2 envelope, nothing echoed", () =>
+    resPoison.status === 2 &&
+    machineOf(resPoison) !== null &&
+    !resPoison.stdout.includes(poisonKey),
+  );
+}
+
+{
+  // 21. deployment fault: missing engine build keeps the contract at BOTH entries
+  const ctx = autoCtx("engine-missing");
+  writeRouting(ctx, [cand("codex", reviewer(ctx, "ok.sh", okBody("codex")))]);
+  for (const entry of [fuguectlBin, dispatch]) {
+    const res = autoRun(ctx, { entry, env: { FUGUE_ENGINE_CLI: join(ctx.root, "no-engine.js") } });
+    const m = machineOf(res);
+    suite.ok(`auto: engine build missing via ${entry === fuguectlBin ? "fuguectl" : "fuguectl-dispatch"} → machine JSON exit 74`, () =>
+      res.status === 74 && m !== null && m.status === "state_error",
+    );
+  }
+
+  // 22. discoverability: the auto seam is documented in --help
+  suite.ok("auto: fuguectl-dispatch --help documents the auto mode contract", () =>
+    help.includes("--auto --task-type pr-review") && help.includes("--policy-arm"),
+  );
+}
+
+{
+  // 23. dual-entrypoint parity: adx3 may call either binary — the seam must
+  // not diverge (deterministic ids equal, same status, same key set).
+  const mkParity = (name) => {
+    const ctx = autoCtx(name);
+    writeRouting(ctx, [cand("codex", reviewer(ctx, "ok.sh", okBody("codex")))]);
+    return ctx;
+  };
+  const viaMain = autoRun(mkParity("parity-main"));
+  const viaWrapper = autoRun(mkParity("parity-wrapper"), {
+    entry: dispatch,
+    argv: ["--auto", "--task-type", "pr-review", "--policy-arm", "static", "--json"],
+  });
+  const a = machineOf(viaMain);
+  const b = machineOf(viaWrapper);
+  suite.ok("auto: fuguectl and fuguectl-dispatch agree on the happy-path seam", () =>
+    viaMain.status === 0 &&
+    viaWrapper.status === 0 &&
+    a !== null &&
+    b !== null &&
+    a.task_id === b.task_id &&
+    a.route_id === b.route_id &&
+    a.status === b.status &&
+    JSON.stringify(Object.keys(a).sort()) === JSON.stringify(Object.keys(b).sort()),
+  );
+}
+
+{
+  // 24. §B3 receipt consistency at the seam: an agent claiming a FOREIGN
+  // route_id ran, but its receipt is not evidence for THIS task → exit 8.
+  const ctx = autoCtx("receipt-mismatch");
+  writeRouting(ctx, [
+    cand("codex", reviewer(ctx, "stale.sh", [
+      `echo "{\\"format\\":1,\\"executed_agent\\":\\"codex\\",\\"route_id\\":\\"${"f".repeat(64)}\\"}"`,
+    ])),
+  ]);
+  const res = autoRun(ctx);
+  const m = machineOf(res);
+  suite.ok("auto: foreign route_id in the agent receipt → exit 8 receipt-mismatch", () =>
+    res.status === 8 &&
+    m !== null &&
+    m.status === "effect_unknown" &&
+    m.attempts[0].detail === "receipt-mismatch",
+  );
+}
+
+{
+  // 25. state-dir resolution: without XDG_STATE_HOME the log falls back to
+  // $HOME/.local/state (frozen §B6 path formula).
+  const ctx = autoCtx("home-fallback");
+  writeRouting(ctx, [cand("codex", reviewer(ctx, "ok.sh", okBody("codex")))]);
+  const home = join(ctx.root, "home");
+  mkdirSync(home, { recursive: true });
+  const env = { ...process.env, AGENTDEX_ROUTING_CONFIG: ctx.configPath, HOME: home };
+  delete env.XDG_STATE_HOME;
+  const res = run(fuguectlBin, [...AUTO, "static"], {
+    input: JSON.stringify(AUTO_PROFILE),
+    env,
+  });
+  suite.ok("auto: no XDG_STATE_HOME → outcomes land under $HOME/.local/state", () =>
+    res.status === 0 &&
+    existsSync(join(home, ".local", "state", "agentdex", "pr-review-outcomes-v1.jsonl")),
+  );
+}
 
 suite.done();

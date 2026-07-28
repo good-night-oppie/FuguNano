@@ -124,6 +124,8 @@ export class FsRunStore implements RunStore {
   }
 
   private async save(run: Run): Promise<void> {
-    await this.fs.write(this.pathForId(run.id), `${JSON.stringify(run, null, 2)}\n`);
+    await this.fs.write(this.pathForId(run.id), `${JSON.stringify(run, null, 2)}\n`, {
+      private: true,
+    });
   }
 }

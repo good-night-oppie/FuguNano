@@ -29,7 +29,7 @@ import type { SplitScores, ValidationVerdict } from '../../domain/self-harness.j
 import { NodeFileSystem } from '../../infra/node-file-system.js';
 
 const WEAKNESSES_SCHEMA_VERSION = 'fugunano.evolve.weaknesses.v1' as const;
-const FITNESS_SCHEMA_VERSION = 'fugunano.evolve.fitness.v1' as const;
+const FITNESS_SCHEMA_VERSION = 'fugunano.evolve.fitness.v2' as const;
 const HISTORY_SCHEMA_VERSION = 'fugunano.evolve.history.v1' as const;
 
 interface EvolveCandidate {
@@ -53,6 +53,7 @@ interface EvolveFitnessFile {
   readonly schemaVersion: typeof FITNESS_SCHEMA_VERSION;
   readonly surface: EvolvableSurface;
   readonly candidateId: string;
+  readonly candidateSha256: string;
   readonly current: SplitScores;
   readonly candidate: SplitScores;
   readonly verdict: ValidationVerdict;
@@ -75,20 +76,51 @@ const fs = (): NodeFileSystem => new NodeFileSystem();
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 
+// Recursive, digest-local JSON canonicalizer: scalars unchanged, array order
+// preserved, object keys sorted lexicographically. Ensures the candidate digest
+// is invariant to formatting / key order at any nesting depth (including inside
+// validationSpecSnapshot). Deliberately local — not a repo-wide canonical-JSON
+// abstraction.
+const canonicalizeJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((item) => canonicalizeJsonValue(item));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, item]) => [key, canonicalizeJsonValue(item)]),
+    );
+  }
+  return value;
+};
+
+const canonicalCandidatePayload = (
+  candidate: EvolveCandidate,
+  validationSpecSnapshot: JsonValue,
+): unknown =>
+  canonicalizeJsonValue({
+    id: candidate.id,
+    surface: candidate.surface,
+    before: candidate.before,
+    after: candidate.after,
+    evidenceRefs: candidate.evidenceRefs,
+    validationSpecSnapshot,
+    ...(candidate.rollbackHint === undefined ? {} : { rollbackHint: candidate.rollbackHint }),
+    ...(candidate.supersedes === undefined ? {} : { supersedes: candidate.supersedes }),
+  });
+
+const candidateSha256 = (candidate: EvolveCandidate, validationSpecSnapshot: JsonValue): string =>
+  sha256(JSON.stringify(canonicalCandidatePayload(candidate, validationSpecSnapshot)));
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isUnknownArray = (value: unknown): value is readonly unknown[] => Array.isArray(value);
 
 const isJsonValue = (value: unknown): value is JsonValue => {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
     return true;
   }
+  if (typeof value === 'number') return Number.isFinite(value);
   if (Array.isArray(value)) return value.every(isJsonValue);
   if (!isRecord(value)) return false;
   return Object.values(value).every(isJsonValue);
@@ -407,11 +439,15 @@ const validateCandidate = (
     const next = guardScores(parsedCases.value, candidate.after);
     if (!next.ok) return next;
     const verdict = acceptEdit(current.value, next.value);
-    const snapshot = candidate.validationSpecSnapshot ?? guardSnapshot(parsedCases.value);
+    const snapshot =
+      candidate.validationSpecSnapshot === undefined
+        ? guardSnapshot(parsedCases.value)
+        : candidate.validationSpecSnapshot;
     return ok({
       schemaVersion: FITNESS_SCHEMA_VERSION,
       surface: candidate.surface,
       candidateId: candidate.id,
+      candidateSha256: candidateSha256(candidate, snapshot),
       current: current.value,
       candidate: next.value,
       verdict,
@@ -439,11 +475,15 @@ const validateCandidate = (
     samples,
   );
   const verdict = acceptEdit(current, next);
-  const snapshot = candidate.validationSpecSnapshot ?? reviewSnapshot(parsedCases.value);
+  const snapshot =
+    candidate.validationSpecSnapshot === undefined
+      ? reviewSnapshot(parsedCases.value)
+      : candidate.validationSpecSnapshot;
   return ok({
     schemaVersion: FITNESS_SCHEMA_VERSION,
     surface: candidate.surface,
     candidateId: candidate.id,
+    candidateSha256: candidateSha256(candidate, snapshot),
     current,
     candidate: next,
     verdict,
@@ -527,6 +567,11 @@ const parseFitnessFile = (value: unknown): Result<EvolveFitnessFile, string> => 
   if (!isSurface(surface.value)) return err('surface must be guard-rule or review-rubric');
   const candidateId = stringField(value, 'candidateId');
   if (!candidateId.ok) return candidateId;
+  const candidateDigest = stringField(value, 'candidateSha256');
+  if (!candidateDigest.ok) return candidateDigest;
+  if (!/^[0-9a-f]{64}$/u.test(candidateDigest.value)) {
+    return err('candidateSha256 must be 64 lowercase hex characters');
+  }
   const current = parseSplitScores(value.current, 'current');
   if (!current.ok) return current;
   const candidate = parseSplitScores(value.candidate, 'candidate');
@@ -542,6 +587,7 @@ const parseFitnessFile = (value: unknown): Result<EvolveFitnessFile, string> => 
     schemaVersion: FITNESS_SCHEMA_VERSION,
     surface: surface.value,
     candidateId: candidateId.value,
+    candidateSha256: candidateDigest.value,
     current: current.value,
     candidate: candidate.value,
     verdict: verdict.value,
@@ -689,6 +735,16 @@ export class EvolvePromoteCommand extends Command {
       this.context.stderr.write('fitness.candidateId must match candidate.id\n');
       return 1;
     }
+    const validationSpecSnapshot =
+      candidate.value.validationSpecSnapshot === undefined
+        ? fitness.value.validationSpecSnapshot
+        : candidate.value.validationSpecSnapshot;
+    if (
+      fitness.value.candidateSha256 !== candidateSha256(candidate.value, validationSpecSnapshot)
+    ) {
+      this.context.stderr.write('fitness.candidateSha256 does not match the current candidate\n');
+      return 1;
+    }
     if (!fitness.value.verdict.accepted) {
       this.context.stderr.write('candidate fitness was not accepted; refusing promotion\n');
       return 1;
@@ -701,8 +757,7 @@ export class EvolvePromoteCommand extends Command {
       evidenceRefs: candidate.value.evidenceRefs,
       beforeContent: candidate.value.before,
       afterSha256: sha256(candidate.value.after),
-      validationSpecSnapshot:
-        candidate.value.validationSpecSnapshot ?? fitness.value.validationSpecSnapshot,
+      validationSpecSnapshot,
       fitness: fitness.value.fitness,
       promotedBy: this.by,
       rollbackHint:
@@ -720,7 +775,7 @@ export class EvolvePromoteCommand extends Command {
       return 1;
     }
 
-    await writeJson(`${this.lineage}/last-promotion.json`, entry);
+    await writeJson(`${this.lineage}/.state/last-promotion.json`, entry);
     this.context.stdout.write(`${JSON.stringify(entry, null, 2)}\n`);
     return 0;
   }
@@ -739,7 +794,7 @@ export class EvolveHistoryCommand extends Command {
       this.context.stderr.write(`${listed.error.detail}\n`);
       return 1;
     }
-    await writeJson(`${this.lineage}/last-history.json`, {
+    await writeJson(`${this.lineage}/.state/last-history.json`, {
       schemaVersion: HISTORY_SCHEMA_VERSION,
       entries: listed.value,
     });

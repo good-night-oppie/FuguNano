@@ -125,6 +125,7 @@ export class PersistentBarrier implements Barrier {
     await this.fs.write(
       this.pathForRound(manifest.round),
       `${JSON.stringify(manifest, null, 2)}\n`,
+      { private: true },
     );
   }
 }

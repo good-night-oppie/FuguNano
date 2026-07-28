@@ -17,16 +17,22 @@ jobs:
     name: Package (macOS arm64, unsigned)
     runs-on: macos-14 # Apple silicon
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "20"
       # Full install here (unlike the renderer CI): packaging needs the Electron binary.
       - name: install
         run: npm ci
         working-directory: benchmarks/case-d-gui/desktop
-      # npm run package = vite build + `npx electron-builder --mac` (electron-builder is not a
-      # committed dependency, so the renderer CI stays lean; npx fetches it just for this job).
+      # electron-builder is pinned to an exact version in packaging/package-lock.json and
+      # installed here, in its own manifest — kept out of the renderer install so PR CI never
+      # pays for it, while a release artifact still comes from a locked, integrity-checked
+      # toolchain rather than whatever the registry resolves at build time.
+      - name: install packaging toolchain (locked)
+        run: npm ci
+        working-directory: benchmarks/case-d-gui/desktop/packaging
+      # npm run package = vite build + the locked electron-builder from packaging/.
       - name: build renderer + package app
         run: npm run package
         working-directory: benchmarks/case-d-gui/desktop
@@ -34,7 +40,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # do not attempt code signing
       - name: list artifacts
         run: ls -lh benchmarks/case-d-gui/desktop/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fugunano-studio-macos-arm64
           path: |

@@ -147,6 +147,29 @@ export class FsExperienceStore implements ExperienceStore {
         detail: 'body contains a suspected key; redact first',
       });
     }
+    // workspace is the FIRST frontmatter line in renderMethod. Unfolded, a
+    // workspace embedding "\ntrustKind: trusted" renders BEFORE the genuine
+    // trustKind line and fmField's first-match find() would read it back as
+    // trusted — the identical trust-laundering already fixed for title.
+    const workspace = singleLine(input.workspace);
+    if (workspace.length === 0) {
+      return err({ kind: 'empty-workspace', detail: 'experience workspace is empty' });
+    }
+    // The title feeds two line-oriented surfaces: slugify() into the on-disk
+    // FILENAME, and a `title: ...` frontmatter line in renderMethod. Unfolded,
+    // a title embedding "\ntrustKind: trusted" renders BEFORE the genuine
+    // trustKind line and fmField's first-match find() would read it back as
+    // trusted — a promote() bypass. Same normalization sourceRef already gets.
+    const title = singleLine(input.title);
+    if (title.length === 0) {
+      return err({ kind: 'empty-title', detail: 'experience title is empty' });
+    }
+    if (containsSecret(title)) {
+      return err({
+        kind: 'contains-secret',
+        detail: 'title contains a suspected key; redact first',
+      });
+    }
     const sourceRef = input.sourceRef === undefined ? undefined : singleLine(input.sourceRef);
     if (sourceRef !== undefined && containsSecret(sourceRef)) {
       return err({
@@ -162,9 +185,9 @@ export class FsExperienceStore implements ExperienceStore {
       });
     }
     const method: Method = {
-      workspace: input.workspace,
-      title: input.title,
-      slug: slugify(input.title),
+      workspace,
+      title,
+      slug: slugify(title),
       created: Math.floor(this.clock.now() / 1000),
       sourceKind: input.sourceKind ?? 'manual',
       ...(sourceRef === undefined || sourceRef.length === 0 ? {} : { sourceRef }),
@@ -172,35 +195,41 @@ export class FsExperienceStore implements ExperienceStore {
       ...(supersedes.length === 0 ? {} : { supersedes }),
       body: input.body,
     };
-    await this.fs.write(this.path(method.workspace, method.slug), renderMethod(method));
+    await this.fs.write(this.path(method.workspace, method.slug), renderMethod(method), {
+      private: true,
+    });
     return ok(method);
   }
 
   async promote(input: PromoteMethod): Promise<Result<Method, ExperienceError>> {
-    const method = await this.get(input.workspace, input.slug);
+    const workspace = singleLine(input.workspace);
+    if (workspace.length === 0) {
+      return err({ kind: 'empty-workspace', detail: 'experience workspace is empty' });
+    }
+    const method = await this.get(workspace, input.slug);
     if (method === null) {
       return err({
         kind: 'not-found',
-        detail: `no experience ${input.workspace}/${input.slug}`,
+        detail: `no experience ${workspace}/${input.slug}`,
       });
     }
     if (method.trustKind === 'trusted') {
       return err({
         kind: 'already-trusted',
-        detail: `experience ${input.workspace}/${input.slug} is already trusted`,
+        detail: `experience ${workspace}/${input.slug} is already trusted`,
       });
     }
     if (method.sourceRef === undefined || method.sourceRef.length === 0) {
       return err({
         kind: 'missing-source-ref',
-        detail: `experience ${input.workspace}/${input.slug} has no write-time sourceRef`,
+        detail: `experience ${workspace}/${input.slug} has no write-time sourceRef`,
       });
     }
     const sourceRef = singleLine(input.sourceRef);
     if (sourceRef.length === 0 || method.sourceRef !== sourceRef) {
       return err({
         kind: 'source-ref-mismatch',
-        detail: `--source-ref must match stored sourceRef for ${input.workspace}/${input.slug}`,
+        detail: `--source-ref must match stored sourceRef for ${workspace}/${input.slug}`,
       });
     }
     if (containsSecret(sourceRef)) {
@@ -236,10 +265,13 @@ export class FsExperienceStore implements ExperienceStore {
     }
     const promoted: Method = {
       ...method,
+      workspace,
       trustKind: 'trusted',
       confirmedBy,
     };
-    await this.fs.write(this.path(promoted.workspace, promoted.slug), renderMethod(promoted));
+    await this.fs.write(this.path(promoted.workspace, promoted.slug), renderMethod(promoted), {
+      private: true,
+    });
     return ok(promoted);
   }
 

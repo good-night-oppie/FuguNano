@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
 
 import type { CommandOptions, CommandResult, CommandRunner } from './command-runner.js';
+import { killProcessGroup, shouldUseProcessGroup } from '../domain/process-group.js';
 
 /** Real subprocess runner (child_process.spawn) — the only place node:child_process is used. */
 export class NodeCommandRunner implements CommandRunner {
@@ -13,8 +14,7 @@ export class NodeCommandRunner implements CommandRunner {
     return new Promise<CommandResult>((resolve, reject) => {
       const env = options.env !== undefined ? { ...process.env, ...options.env } : process.env;
       const timeoutMs = options.timeoutMs;
-      const useProcessGroup =
-        timeoutMs !== undefined && timeoutMs > 0 && process.platform !== 'win32';
+      const useProcessGroup = shouldUseProcessGroup(timeoutMs);
       const child = spawn(command, [...args], {
         env,
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -23,17 +23,8 @@ export class NodeCommandRunner implements CommandRunner {
       let timedOut = false;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let forceKill: ReturnType<typeof setTimeout> | undefined;
-      const killChild = (signal: NodeJS.Signals): void => {
-        if (useProcessGroup && child.pid !== undefined) {
-          try {
-            process.kill(-child.pid, signal);
-            return;
-          } catch {
-            // The child may have exited before the group signal lands; fall back below.
-          }
-        }
-        child.kill(signal);
-      };
+      const killChild = (signal: NodeJS.Signals): void =>
+        killProcessGroup(child, signal, useProcessGroup);
       if (timeoutMs !== undefined && timeoutMs > 0) {
         timeout = setTimeout(() => {
           timedOut = true;
@@ -72,6 +63,17 @@ export class NodeCommandRunner implements CommandRunner {
         });
       });
 
+      // A child may exit before draining stdin — a bad flag, missing auth, an
+      // immediate crash, or simply an answer it produced without reading. That
+      // surfaces as EPIPE on this pipe, and an unhandled 'error' event on a
+      // stream takes down the whole process; it is NOT a rejected promise.
+      // child.on('error') above does not cover it: that fires for spawn
+      // failures on the ChildProcess, not for writes to its stdin pipe.
+      //
+      // Swallow it deliberately. The child's exit code, delivered via 'close',
+      // is the authority on whether the dispatch failed — a write we could not
+      // finish is subordinate to that verdict, never a separate failure.
+      child.stdin.on('error', () => {});
       if (options.stdin !== undefined) child.stdin.write(options.stdin);
       child.stdin.end();
     });

@@ -28,3 +28,19 @@ reports/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# ── editor / agent-tool local state — never tracked ──
+.cursor/
+.cursorindexingignore
+.specstory/
+.serena/
+# session-memory digest auto-regenerated into cwd by the fleet harness
+# (~/.claude/scripts/distill_highlights.py) — not repo content
+LATEST_HIGHLIGHTS.md
+.vscode/
+
+# Third-party trademark asset used only as a local design reference in
+# docs/design/adx-v3-weco-product-mirror/index.html. Deliberately NOT published
+# to this public repo; the page renders with a missing-image placeholder.
+# tc-fugu-11, 2026-07-27 — flip this if the owner clears redistribution.
+docs/design/adx-v3-weco-product-mirror/assets/weco-logo.svg
