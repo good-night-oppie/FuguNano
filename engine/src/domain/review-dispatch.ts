@@ -226,7 +226,10 @@ export const runReviewDispatch = async (
       maxAttempts: loaded.config.max_attempts,
       timeoutMs: loaded.config.dispatch_timeout_seconds * 1000,
       logPath,
-      observedAt: routedAt,
+      // The same injectable clock that stamped routedAt — read again at
+      // terminal emission, so observed_at is the terminal time, not the
+      // routing time (D10 no-regret half).
+      now,
     });
 
     const resultRef = result.resultJson?.['result_ref'];

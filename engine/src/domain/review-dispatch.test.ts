@@ -172,6 +172,25 @@ describe('hot path', () => {
       profile: PROFILE,
     });
   });
+
+  it('dispatch.terminal.observed_at is the terminal time, not a copy of routed_at', async () => {
+    writeConfig([{ name: 'codex', argv: [fixture('codex.sh', okScript('codex'))] }]);
+    // Advancing clock: every read is 1s later than the previous one. Routing
+    // reads the first tick; terminal emission happens after the attempts ran
+    // and must read a LATER tick. An observed_at copied from routing time
+    // collapses the two and fails the inequality.
+    let tick = 0;
+    const clock = (): Date => new Date(Date.parse('2026-07-23T12:00:00Z') + 1000 * tick++);
+    const { exitCode } = await run(PROFILE, 'static', deps({ now: clock }));
+    expect(exitCode).toBe(0);
+    const log = readOutcomeLog(logPath);
+    const decided = log.events[0]!;
+    const terminal = log.events[1]!;
+    expect(decided['routed_at']).toBe('2026-07-23T12:00:00.000Z');
+    expect(terminal['observed_at']).not.toBe(decided['routed_at']);
+    // Fixed-precision ISO-8601 UTC compares lexicographically as time.
+    expect(String(terminal['observed_at']) > String(decided['routed_at'])).toBe(true);
+  });
 });
 
 describe('frozen failure taxonomy', () => {

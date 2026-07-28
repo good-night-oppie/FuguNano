@@ -86,7 +86,13 @@ export interface DispatchOptions {
   readonly timeoutMs: number;
   /** Outcome-log path for the dispatch.terminal event; null skips emission (unit seams). */
   readonly logPath: string | null;
-  readonly observedAt: string;
+  /**
+   * Clock read at terminal-event emission, AFTER the attempts have run — up to
+   * maxAttempts × timeoutMs of real time after routing. A pre-formatted string
+   * here would freeze `observed_at` at whatever instant the caller built the
+   * options, which is how the terminal event came to carry the routing time.
+   */
+  readonly now: () => Date;
 }
 
 export const computeDispatchTerminalId = (routeId: string): string =>
@@ -193,7 +199,7 @@ const emitTerminal = (
     event_type: 'dispatch.terminal',
     event_id: computeDispatchTerminalId(options.routeId),
     route_id: options.routeId,
-    observed_at: options.observedAt,
+    observed_at: options.now().toISOString(),
     terminal_state: state,
     actual_executor: actualExecutor,
     attempts: attempts.map((a) => ({

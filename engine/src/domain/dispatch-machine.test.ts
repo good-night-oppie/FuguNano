@@ -53,7 +53,7 @@ const opts = (
   maxAttempts: 3,
   timeoutMs: 4000,
   logPath,
-  observedAt: '2026-07-23T12:00:00Z',
+  now: () => new Date('2026-07-23T12:00:00Z'),
   ...overrides,
 });
 
