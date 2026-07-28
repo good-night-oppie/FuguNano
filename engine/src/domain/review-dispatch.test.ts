@@ -88,7 +88,90 @@ const run = (
   profile: Record<string, unknown> = PROFILE,
   arm = 'static',
   d: ReviewDispatchDeps = deps(),
-): ReturnType<typeof runReviewDispatch> => runReviewDispatch(JSON.stringify(profile), arm, d);
+  cohortIndexRaw?: string,
+): ReturnType<typeof runReviewDispatch> =>
+  runReviewDispatch(JSON.stringify(profile), arm, d, cohortIndexRaw);
+
+describe('cohort_index admission', () => {
+  it('absent 4th arg → machine JSON and route.decided carry cohort_index: null', async () => {
+    writeConfig([{ name: 'codex', argv: [fixture('codex.sh', okScript('codex'))] }]);
+    const { machine, exitCode } = await run();
+    expect(exitCode).toBe(0);
+    expect(machine['cohort_index']).toBeNull();
+    expect(readOutcomeLog(logPath).events[0]!['cohort_index']).toBeNull();
+  });
+
+  it('non-integer cohort_index → invalid_input exit 2, zero side effects', async () => {
+    writeConfig([{ name: 'codex', argv: [fixture('x.sh', okScript('codex'))] }]);
+    for (const raw of ['3.5', 'abc']) {
+      const { machine, exitCode } = await run(PROFILE, 'static', deps(), raw);
+      expect(exitCode).toBe(2);
+      expect(machine['status']).toBe('invalid_input');
+      expect(fs.existsSync(logPath)).toBe(false);
+    }
+  });
+
+  it("'4' + static → parity fail, invalid_input, log untouched, candidate never ran", async () => {
+    const marker = path.join(dir, 'parity-spawn');
+    writeConfig([
+      {
+        name: 'codex',
+        argv: [fixture('parity.sh', `cat > /dev/null; touch ${marker}; echo "{}"`)],
+      },
+    ]);
+    const { machine, exitCode } = await run(PROFILE, 'static', deps(), '4');
+    expect(exitCode).toBe(2);
+    expect(machine['status']).toBe('invalid_input');
+    expect(machine['reason']).toMatch(/parity/);
+    expect(fs.existsSync(logPath)).toBe(false);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it("'4' + thompson → exit 0, event carries cohort_index: 4", async () => {
+    writeConfig([{ name: 'codex', argv: [fixture('ok.sh', okScript('codex'))] }]);
+    const { machine, exitCode } = await run(PROFILE, 'thompson', deps(), '4');
+    expect(exitCode).toBe(0);
+    expect(machine['cohort_index']).toBe(4);
+    expect(readOutcomeLog(logPath).events[0]!['cohort_index']).toBe(4);
+  });
+
+  it('replay guard: same index is duplicate-noop; different index is DUPLICATE_ID_CONFLICT', async () => {
+    const marker = path.join(dir, 'cohort-replays');
+    writeConfig([
+      {
+        name: 'codex',
+        argv: [fixture('creplay.sh', `cat > /dev/null; echo run >> ${marker}; echo "{}"`)],
+      },
+    ]);
+    expect((await run(PROFILE, 'static', deps(), '5')).exitCode).toBe(0);
+    // Same index → byte-identical route.decided → duplicate-noop refusal.
+    const same = await run(PROFILE, 'static', deps(), '5');
+    expect(same.exitCode).toBe(74);
+    expect(same.machine['status']).toBe('state_error');
+    expect(same.machine['reason']).toMatch(/refusing to re-dispatch/);
+    // Different index → payload differs → DUPLICATE_ID_CONFLICT (same route_id).
+    const different = await run(PROFILE, 'thompson', deps(), '6');
+    expect(different.exitCode).toBe(74);
+    expect(different.machine['status']).toBe('state_error');
+    expect(fs.readFileSync(marker, 'utf8')).toBe('run\n');
+  });
+
+  it('no_eligible_agent with cohortIndex 5 echoes it but does not consume the index', async () => {
+    writeConfig([
+      { name: 'claude-code', argv: [fixture('z.sh', okScript('claude-code'))], lineage: 'claude' },
+    ]);
+    const { machine, exitCode } = await run(
+      { ...PROFILE, author_lineage: 'claude' },
+      'static',
+      deps(),
+      '5',
+    );
+    expect(exitCode).toBe(7);
+    expect(machine['status']).toBe('no_eligible_agent');
+    expect(machine['cohort_index']).toBe(5);
+    expect(fs.existsSync(logPath)).toBe(false);
+  });
+});
 
 describe('hot path', () => {
   it('static arm end-to-end: COMPLETED machine JSON + route.decided + dispatch.terminal', async () => {

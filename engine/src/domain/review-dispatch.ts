@@ -136,6 +136,20 @@ const errorOutcome = (
 };
 
 /**
+ * Parse the optional `--cohort-index` CLI string. undefined/'' → null
+ * (non-cohort); otherwise a decimal integer string. Range/parity checks live
+ * in buildRouteDecided so a mismatch never appends or spawns.
+ */
+const parseCohortIndexRaw = (cohortIndexRaw: string | undefined): number | null => {
+  if (cohortIndexRaw === undefined || cohortIndexRaw === '') return null;
+  const trimmed = cohortIndexRaw.trim();
+  if (!/^(0|[1-9][0-9]*)$/u.test(trimmed)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'cohort_index must be a decimal integer');
+  }
+  return Number(trimmed);
+};
+
+/**
  * Run the frozen five-step hot path once. Never throws: every failure folds
  * into a machine JSON + exit code pair (the caller's only jobs are printing
  * and exiting).
@@ -144,9 +158,14 @@ export const runReviewDispatch = async (
   taskRaw: string,
   policyArmRaw: string,
   deps: ReviewDispatchDeps,
+  cohortIndexRaw?: string,
 ): Promise<ReviewDispatchOutcome> => {
   const now = deps.now ?? ((): Date => new Date());
   try {
+    // Parse before parseTaskProfile so a bad index fails closed with zero
+    // side effects (no candidate spawn, no log write).
+    const cohortIndex = parseCohortIndexRaw(cohortIndexRaw);
+
     if (!(POLICY_ARMS as ReadonlyArray<string>).includes(policyArmRaw)) {
       throw new OutcomeLogError('INVALID_EVENT', 'policy_arm must be "static" or "thompson"');
     }
@@ -177,6 +196,7 @@ export const runReviewDispatch = async (
           task_id: taskId,
           route_id: routeId,
           policy_arm: policyArm,
+          cohort_index: cohortIndex,
           config_sha256: loaded.configSha256,
           selected_agent: null,
           executed_agent: null,
@@ -204,6 +224,7 @@ export const runReviewDispatch = async (
         prNumber: profile.pr,
         headSha: profile.headSha,
         policyArm,
+        cohortIndex,
         candidateId: rank.ranked[0]!.name,
         rankedCandidates: rank.ranked.map((c) => c.name),
         seed,
@@ -248,6 +269,7 @@ export const runReviewDispatch = async (
         task_id: taskId,
         route_id: routeId,
         policy_arm: policyArm,
+        cohort_index: cohortIndex,
         config_sha256: loaded.configSha256,
         selected_agent: rank.ranked[0]!.name,
         executed_agent: result.actualExecutor,

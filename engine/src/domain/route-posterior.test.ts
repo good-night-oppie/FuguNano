@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { OutcomeEvent } from './outcome-log.js';
 import {
+  armForCohortIndex,
   buildOutcomeFinalized,
   buildRouteDecided,
   foldPosteriors,
@@ -17,6 +18,7 @@ const routeInput = (pr: number, overrides: Partial<RouteDecidedInput> = {}): Rou
   prNumber: pr,
   headSha: 'f'.repeat(40),
   policyArm: 'thompson',
+  cohortIndex: null,
   candidateId: 'claude',
   rankedCandidates: ['claude', 'codex', 'gemini'],
   seed: SEED,
@@ -154,6 +156,28 @@ describe('fold — learning rules', () => {
     expect(b).toStrictEqual(a);
   });
 
+  it('foldPosteriors ignores cohort_index on route.decided (reader must not key on it)', () => {
+    const without = [
+      ...pair(1, { cohortIndex: null }, { actualExecutor: 'claude' }),
+      ...pair(
+        2,
+        { cohortIndex: null },
+        { outcome: 'NOT_VERIFIED_WITHIN_WINDOW', actualExecutor: 'codex' },
+      ),
+    ];
+    const withIndex = [
+      ...pair(1, { cohortIndex: 2 }, { actualExecutor: 'claude' }),
+      ...pair(
+        2,
+        { cohortIndex: 4 },
+        { outcome: 'NOT_VERIFIED_WITHIN_WINDOW', actualExecutor: 'codex' },
+      ),
+    ];
+    expect(foldPosteriors(withIndex, [...CANDIDATES])).toStrictEqual(
+      foldPosteriors(without, [...CANDIDATES]),
+    );
+  });
+
   it('duplicate final events (defensive) count once', () => {
     const [route, final] = pair(1);
     const { posteriors } = foldPosteriors([route!, final!, final!], [...CANDIDATES]);
@@ -193,6 +217,56 @@ describe('static-outcome-isolation (pre-Task-1 test)', () => {
     expect(posteriors[0]).toStrictEqual({ candidateId: 'claude', alpha: 2, beta: 1 });
     expect(diagnostics.applied).toBe(1);
     expect(diagnostics.blockedStaticArm).toBe(1);
+  });
+});
+
+describe('cohort_index (schema-freeze v1)', () => {
+  it('cohortIndex 1 + static → event carries cohort_index: 1', () => {
+    const event = buildRouteDecided(routeInput(10, { cohortIndex: 1, policyArm: 'static' }));
+    expect(event['cohort_index']).toBe(1);
+    expect(event['policy_arm']).toBe('static');
+  });
+
+  it('cohortIndex 2 + thompson is accepted', () => {
+    const event = buildRouteDecided(routeInput(11, { cohortIndex: 2, policyArm: 'thompson' }));
+    expect(event['cohort_index']).toBe(2);
+  });
+
+  it('cohortIndex 1 + thompson throws parity', () => {
+    expect(() =>
+      buildRouteDecided(routeInput(12, { cohortIndex: 1, policyArm: 'thompson' })),
+    ).toThrow(/parity/);
+  });
+
+  it('cohortIndex 2 + static throws parity', () => {
+    expect(() =>
+      buildRouteDecided(routeInput(13, { cohortIndex: 2, policyArm: 'static' })),
+    ).toThrow(/parity/);
+  });
+
+  it('cohortIndex null + each arm is accepted and serializes as null', () => {
+    for (const arm of ['static', 'thompson'] as const) {
+      const event = buildRouteDecided(routeInput(14, { cohortIndex: null, policyArm: arm }));
+      expect(event['cohort_index']).toBeNull();
+      expect(JSON.stringify(event)).toContain('"cohort_index":null');
+    }
+  });
+
+  it('rejects out-of-range / non-integer cohortIndex', () => {
+    for (const bad of [0, 51, -3, 2.5, Number.NaN]) {
+      expect(() => buildRouteDecided(routeInput(15, { cohortIndex: bad }))).toThrow(
+        /integer in 1\.\.50/,
+      );
+    }
+  });
+
+  it('armForCohortIndex(1..50) yields 25 static (odd) and 25 thompson (even)', () => {
+    const arms = Array.from({ length: 50 }, (_, i) => armForCohortIndex(i + 1));
+    expect(arms.filter((a) => a === 'static')).toHaveLength(25);
+    expect(arms.filter((a) => a === 'thompson')).toHaveLength(25);
+    for (let i = 1; i <= 50; i += 1) {
+      expect(armForCohortIndex(i)).toBe(i % 2 === 1 ? 'static' : 'thompson');
+    }
   });
 });
 

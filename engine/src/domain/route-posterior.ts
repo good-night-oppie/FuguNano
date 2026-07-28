@@ -41,11 +41,25 @@ export const TERMINAL_OUTCOMES = [
 ] as const;
 export type TerminalOutcome = (typeof TERMINAL_OUTCOMES)[number];
 
+/**
+ * Assignment-time cohort parity rule (single source): odd index ⇒ static,
+ * even ⇒ thompson. The engine records and cross-checks; it never derives
+ * the arm from the index.
+ */
+export const armForCohortIndex = (index: number): PolicyArm =>
+  index % 2 === 1 ? 'static' : 'thompson';
+
 export interface RouteDecidedInput {
   readonly repo: string;
   readonly prNumber: number;
   readonly headSha: string;
   readonly policyArm: PolicyArm;
+  /**
+   * Assignment-time admission index of the 50-task cohort (1..50), assigned
+   * by the external Python admission layer. null = non-cohort traffic.
+   * Parity: odd ⇒ static, even ⇒ thompson (`armForCohortIndex`).
+   */
+  readonly cohortIndex: number | null;
   readonly candidateId: string;
   readonly rankedCandidates: ReadonlyArray<string>;
   readonly seed: string;
@@ -101,6 +115,17 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
   if (!POLICY_ARMS.includes(input.policyArm)) {
     throw new OutcomeLogError('INVALID_EVENT', `unknown policy_arm ${String(input.policyArm)}`);
   }
+  if (input.cohortIndex !== null) {
+    if (!Number.isInteger(input.cohortIndex) || input.cohortIndex < 1 || input.cohortIndex > 50) {
+      throw new OutcomeLogError(
+        'INVALID_EVENT',
+        'cohort_index must be an integer in 1..50 or null',
+      );
+    }
+    if (armForCohortIndex(input.cohortIndex) !== input.policyArm) {
+      throw new OutcomeLogError('INVALID_EVENT', 'cohort_index parity does not match policy_arm');
+    }
+  }
   assertNonEmpty(input.candidateId, 'candidateId');
   assertNonEmpty(input.configSha256, 'configSha256');
   assertNonEmpty(input.routedAt, 'routedAt');
@@ -139,6 +164,7 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
     pr_number: input.prNumber,
     head_sha_at_route: input.headSha,
     policy_arm: input.policyArm,
+    cohort_index: input.cohortIndex,
     candidate_id: input.candidateId,
     ranked_candidates: [...input.rankedCandidates],
     seed: parseRouteSeed(input.seed),

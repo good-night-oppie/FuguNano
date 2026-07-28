@@ -168,4 +168,29 @@ describe('machine JSON contract', () => {
     expect(code).toBe(2);
     expect(machine['status']).toBe('invalid_input');
   });
+
+  it('--cohort-index 2 with thompson arm round-trips cohort_index: 2 into machine JSON', async () => {
+    writeConfig(
+      fixture(
+        'cohort.sh',
+        `cat > /dev/null; echo "{\\"format\\":1,\\"executed_agent\\":\\"codex\\",\\"result_ref\\":\\"r1\\"}"`,
+      ),
+    );
+    const { code, machine } = await runAuto(
+      [
+        'dispatch',
+        '--auto',
+        '--task-type',
+        'pr-review',
+        '--policy-arm',
+        'thompson',
+        '--cohort-index',
+        '2',
+      ],
+      PROFILE,
+    );
+    expect(code).toBe(0);
+    expect(machine['cohort_index']).toBe(2);
+    expect(machine['policy_arm']).toBe('thompson');
+  });
 });

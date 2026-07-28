@@ -36,6 +36,7 @@ export class DispatchAutoCommand extends Command {
   auto = Option.Boolean('--auto', { required: true });
   taskType = Option.String('--task-type');
   policyArm = Option.String('--policy-arm');
+  cohortIndex = Option.String('--cohort-index');
   json = Option.Boolean('--json', false);
 
   override async execute(): Promise<number> {
@@ -50,7 +51,12 @@ export class DispatchAutoCommand extends Command {
       return 2;
     }
     const taskRaw = await readStream(this.context.stdin as AsyncIterable<Buffer | string>);
-    const outcome = await runReviewDispatch(taskRaw, this.policyArm ?? '', { env: process.env });
+    const outcome = await runReviewDispatch(
+      taskRaw,
+      this.policyArm ?? '',
+      { env: process.env },
+      this.cohortIndex,
+    );
     this.context.stdout.write(`${JSON.stringify(outcome.machine)}\n`);
     return outcome.exitCode;
   }

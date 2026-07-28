@@ -121,6 +121,7 @@ describe('thompson rank', () => {
         prNumber: i + 1,
         headSha: 'f'.repeat(40),
         policyArm: 'thompson',
+        cohortIndex: null,
         candidateId: 'gemini',
         rankedCandidates: ['gemini'],
         seed: SEED,
