@@ -59,4 +59,4 @@ Never dispatch when preflight is NO-GO.
 
 ## Dev
 
-`make ci` (secret scan + launcher lint + tests). See [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md).
+`make ci` (secret scan + workflow pin gate + launcher lint + docs gate + engine build + tests). See [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md).

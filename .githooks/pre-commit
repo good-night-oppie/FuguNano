@@ -14,6 +14,9 @@ npm run --silent lint:launchers
 echo "pre-commit: docs-drift gate"
 npm run --silent check:docs
 
+echo "pre-commit: workflow pin gate"
+npm run --silent check:workflows
+
 # Engine checks scoped to what THIS commit touches (plus a whole-engine
 # typecheck, which is the cheapest whole-program guarantee we have).
 staged_engine_ts=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^engine/.*\.ts$' || true)

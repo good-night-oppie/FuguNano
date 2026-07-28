@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help install install-cc install-skill verify doctor test test-engine test-engine-ci scan lint check-docs build-engine ci ci-clean check hooks gui-install gui gui-test gui-build gui-package
+.PHONY: help install install-cc install-skill verify doctor test test-engine test-engine-ci scan check-workflows lint check-docs build-engine ci ci-clean check hooks gui-install gui gui-test gui-build gui-package
 
 GUI_DIR := benchmarks/case-d-gui/desktop
 
@@ -39,6 +39,9 @@ scan: ## Secret-leak scan (local gate)
 lint: ## Node launcher syntax check
 	npm run lint:launchers
 
+check-workflows: ## Supply-chain gate (every GitHub Action pinned to a full commit SHA)
+	npm run check:workflows
+
 check-docs: ## Docs-drift gate (fuguectl README + Self-Harness guide == actual code)
 	npm run check:docs
 
@@ -55,11 +58,11 @@ hooks: ## Install repo git hooks (pre-commit = fast tiny-PR gate, pre-push = ful
 	chmod +x .githooks/pre-commit .githooks/pre-push
 	@echo "hooks installed: pre-commit (scan+lint+docs+staged engine checks), pre-push (make ci)"
 
-ci: scan lint check-docs build-engine test test-engine ## Full local CI using installed deps
+ci: scan check-workflows lint check-docs build-engine test test-engine ## Full local CI using installed deps
 
 check: ci ## Alias for ci
 
-ci-clean: scan lint check-docs build-engine test test-engine-ci ## Full clean CI with engine npm ci
+ci-clean: scan check-workflows lint check-docs build-engine test test-engine-ci ## Full clean CI with engine npm ci
 
 gui-install: ## Install FuguNano Studio desktop GUI deps
 	cd $(GUI_DIR) && npm install
