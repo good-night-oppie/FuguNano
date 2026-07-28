@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -209,6 +210,47 @@ describe('hot path', () => {
       },
     });
     expect(log.events[0]!['profile_sha256']).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('route.decided carries candidate_identities matching the fixture script digest', async () => {
+    const scriptPath = fixture('codex.sh', okScript('codex'));
+    writeConfig([{ name: 'codex', argv: [scriptPath] }]);
+    const { exitCode } = await run();
+    expect(exitCode).toBe(0);
+    const decided = readOutcomeLog(logPath).events[0]!;
+    const expectedSha = createHash('sha256').update(fs.readFileSync(scriptPath)).digest('hex');
+    const identities = decided['candidate_identities'] as ReadonlyArray<Record<string, unknown>>;
+    expect(identities).toHaveLength(1);
+    expect(identities[0]).toMatchObject({
+      candidate_id: 'codex',
+      argv0_sha256: expectedSha,
+    });
+    expect(String(identities[0]!['argv0_realpath'])).toBe(fs.realpathSync(scriptPath));
+    expect(identities[0]!['argv0_digest_error']).toBeUndefined();
+  });
+
+  it('missing-binary fallback: never-spawned candidate gets ENOENT identity; dispatch proceeds', async () => {
+    const missing = path.join(dir, 'does-not-exist');
+    const ok = fixture('ok.sh', okScript('claude'));
+    writeConfig([
+      { name: 'codex', argv: [missing], priority: 10 },
+      { name: 'claude', argv: [ok], priority: 20 },
+    ]);
+    const { machine, exitCode } = await run();
+    expect(exitCode).toBe(0);
+    expect(machine['executed_agent']).toBe('claude');
+    const decided = readOutcomeLog(logPath).events[0]!;
+    const identities = decided['candidate_identities'] as ReadonlyArray<Record<string, unknown>>;
+    expect(identities).toHaveLength(2);
+    expect(identities[0]).toMatchObject({
+      candidate_id: 'codex',
+      argv0_sha256: null,
+      argv0_digest_error: 'ENOENT',
+    });
+    expect(identities[1]).toMatchObject({
+      candidate_id: 'claude',
+      argv0_sha256: createHash('sha256').update(fs.readFileSync(ok)).digest('hex'),
+    });
   });
 
   it('a credential-shaped changed_path rides only inside the profile digest, never the payload', async () => {

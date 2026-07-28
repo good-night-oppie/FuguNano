@@ -124,6 +124,14 @@ describe('thompson rank', () => {
         cohortIndex: null,
         candidateId: 'gemini',
         rankedCandidates: ['gemini'],
+        candidateIdentities: [
+          {
+            candidateId: 'gemini',
+            argv0Realpath: '/bin/gemini',
+            argv0Sha256: 'a'.repeat(64),
+            argvSha256: 'b'.repeat(64),
+          },
+        ],
         seed: SEED,
         configSha256: 'c'.repeat(64),
         profileSha256: 'a'.repeat(64),

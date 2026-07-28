@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { CandidateIdentity } from './candidate-identity.js';
 import type { OutcomeEvent } from './outcome-log.js';
 import {
   armForCohortIndex,
@@ -12,28 +13,58 @@ import {
 
 const CANDIDATES = ['claude', 'codex', 'gemini'] as const;
 const SEED = '0123456789abcdef0123456789abcdef';
+const HEX_A = 'a'.repeat(64);
+const HEX_B = 'b'.repeat(64);
+const HEX_C = 'c'.repeat(64);
 
-const routeInput = (pr: number, overrides: Partial<RouteDecidedInput> = {}): RouteDecidedInput => ({
-  repo: 'acme/widgets',
-  prNumber: pr,
-  headSha: 'f'.repeat(40),
-  policyArm: 'thompson',
-  cohortIndex: null,
-  candidateId: 'claude',
-  rankedCandidates: ['claude', 'codex', 'gemini'],
-  seed: SEED,
-  configSha256: 'c'.repeat(64),
-  profileSha256: 'a'.repeat(64),
-  profileFacets: {
-    authorLineage: 'human:alice',
-    languages: ['python'],
-    riskTags: [],
-    changedPathCount: 1,
-  },
-  routedAt: '2026-07-23T12:00:00Z',
-  deadlineAt: '2026-07-30T12:00:00Z',
+const identity = (
+  candidateId: string,
+  overrides: Partial<CandidateIdentity> = {},
+): CandidateIdentity => ({
+  candidateId,
+  argv0Realpath: `/bin/${candidateId}`,
+  argv0Sha256: HEX_A,
+  argvSha256: HEX_B,
   ...overrides,
 });
+
+const identitiesFor = (names: ReadonlyArray<string>): CandidateIdentity[] =>
+  names.map((name, i) =>
+    identity(name, {
+      argv0Sha256: i === 0 ? HEX_A : i === 1 ? HEX_B : HEX_C,
+      argvSha256: i === 0 ? HEX_B : i === 1 ? HEX_C : HEX_A,
+    }),
+  );
+
+const routeInput = (pr: number, overrides: Partial<RouteDecidedInput> = {}): RouteDecidedInput => {
+  const rankedCandidates = overrides.rankedCandidates ?? ['claude', 'codex', 'gemini'];
+  return {
+    repo: 'acme/widgets',
+    prNumber: pr,
+    headSha: 'f'.repeat(40),
+    policyArm: 'thompson',
+    cohortIndex: null,
+    candidateId: 'claude',
+    rankedCandidates,
+    candidateIdentities: identitiesFor(rankedCandidates),
+    seed: SEED,
+    configSha256: 'c'.repeat(64),
+    profileSha256: 'a'.repeat(64),
+    profileFacets: {
+      authorLineage: 'human:alice',
+      languages: ['python'],
+      riskTags: [],
+      changedPathCount: 1,
+    },
+    routedAt: '2026-07-23T12:00:00Z',
+    deadlineAt: '2026-07-30T12:00:00Z',
+    ...overrides,
+    // Re-derive identities when rankedCandidates overridden without identities.
+    ...(!('candidateIdentities' in overrides) && overrides.rankedCandidates !== undefined
+      ? { candidateIdentities: identitiesFor(overrides.rankedCandidates) }
+      : {}),
+  };
+};
 
 const finalInput = (
   pr: number,
@@ -304,5 +335,114 @@ describe('fallback + attribution rules', () => {
     }
     expect(diagnostics.applied).toBe(0);
     expect(diagnostics.blockedUnattributable).toBe(3);
+  });
+});
+
+describe('candidate_identities (schema-freeze v1)', () => {
+  it('event carries candidate_identities 1:1 with ranked_candidates, snake_case shape', () => {
+    const event = buildRouteDecided(routeInput(20));
+    expect(event['ranked_candidates']).toStrictEqual(['claude', 'codex', 'gemini']);
+    expect(event['candidate_identities']).toStrictEqual([
+      {
+        candidate_id: 'claude',
+        argv0_realpath: '/bin/claude',
+        argv0_sha256: HEX_A,
+        argv_sha256: HEX_B,
+      },
+      {
+        candidate_id: 'codex',
+        argv0_realpath: '/bin/codex',
+        argv0_sha256: HEX_B,
+        argv_sha256: HEX_C,
+      },
+      {
+        candidate_id: 'gemini',
+        argv0_realpath: '/bin/gemini',
+        argv0_sha256: HEX_C,
+        argv_sha256: HEX_A,
+      },
+    ]);
+  });
+
+  it('mismatched length/order/name → throws /1:1/', () => {
+    expect(() =>
+      buildRouteDecided(
+        routeInput(21, {
+          rankedCandidates: ['claude', 'codex'],
+          candidateIdentities: identitiesFor(['claude']),
+        }),
+      ),
+    ).toThrow(/1:1/);
+    expect(() =>
+      buildRouteDecided(
+        routeInput(21, {
+          rankedCandidates: ['claude', 'codex'],
+          candidateIdentities: identitiesFor(['codex', 'claude']),
+        }),
+      ),
+    ).toThrow(/1:1/);
+  });
+
+  it('null digest without error field → throws; bad hex → throws', () => {
+    expect(() =>
+      buildRouteDecided(
+        routeInput(22, {
+          rankedCandidates: ['claude'],
+          candidateIdentities: [identity('claude', { argv0Sha256: null })],
+        }),
+      ),
+    ).toThrow(/argv0DigestError/);
+    expect(() =>
+      buildRouteDecided(
+        routeInput(22, {
+          rankedCandidates: ['claude'],
+          candidateIdentities: [identity('claude', { argvSha256: 'not-hex' })],
+        }),
+      ),
+    ).toThrow(/argvSha256/);
+    expect(() =>
+      buildRouteDecided(
+        routeInput(22, {
+          rankedCandidates: ['claude'],
+          candidateIdentities: [identity('claude', { argv0Sha256: 'ABCDEF' + '0'.repeat(58) })],
+        }),
+      ),
+    ).toThrow(/argv0Sha256/);
+  });
+
+  it('foldPosteriors is identical with candidate_identities present vs stripped (audit-only)', () => {
+    const withIds = [
+      ...pair(1, {}, { actualExecutor: 'claude' }),
+      ...pair(2, {}, { outcome: 'NOT_VERIFIED_WITHIN_WINDOW', actualExecutor: 'codex' }),
+    ];
+    const stripped: OutcomeEvent[] = withIds.map((event) => {
+      if (event.event_type !== 'route.decided') return event;
+      const rest = { ...event };
+      delete rest['candidate_identities'];
+      return rest;
+    });
+    expect(foldPosteriors(withIds, [...CANDIDATES])).toStrictEqual(
+      foldPosteriors(stripped, [...CANDIDATES]),
+    );
+  });
+
+  it('null digest WITH error field serializes argv0_digest_error conditionally', () => {
+    const event = buildRouteDecided(
+      routeInput(23, {
+        rankedCandidates: ['claude'],
+        candidateIdentities: [
+          identity('claude', { argv0Sha256: null, argv0DigestError: 'ENOENT' }),
+        ],
+      }),
+    );
+    expect(event['candidate_identities']).toStrictEqual([
+      {
+        candidate_id: 'claude',
+        argv0_realpath: '/bin/claude',
+        argv0_sha256: null,
+        argv_sha256: HEX_B,
+        argv0_digest_error: 'ENOENT',
+      },
+    ]);
   });
 });

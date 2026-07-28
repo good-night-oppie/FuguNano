@@ -1,3 +1,4 @@
+import type { CandidateIdentity } from './candidate-identity.js';
 import {
   computeFinalId,
   computeRouteId,
@@ -62,6 +63,12 @@ export interface RouteDecidedInput {
   readonly cohortIndex: number | null;
   readonly candidateId: string;
   readonly rankedCandidates: ReadonlyArray<string>;
+  /**
+   * REQUIRED (schema-freeze v1): per-candidate implementation digests observed
+   * at route time (argv0 realpath + file sha256 + argv sha256). Audit-only in
+   * v1 — the fold stays name-keyed; identity policy consumers come later.
+   */
+  readonly candidateIdentities: ReadonlyArray<CandidateIdentity>;
   readonly seed: string;
   readonly configSha256: string;
   readonly routedAt: string;
@@ -151,6 +158,42 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
       'profileFacets.changedPathCount must be a non-negative integer',
     );
   }
+  // Validate through an unknown alias: Array.isArray on ReadonlyArray narrows
+  // to any[] and trips the eslint layering/any gate.
+  const identitiesUnknown: unknown = input.candidateIdentities;
+  if (!Array.isArray(identitiesUnknown)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'candidateIdentities required');
+  }
+  const identities = identitiesUnknown as ReadonlyArray<CandidateIdentity>;
+  if (
+    identities.length !== input.rankedCandidates.length ||
+    identities.some((entry, i) => entry.candidateId !== input.rankedCandidates[i])
+  ) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      'candidateIdentities must match ranked_candidates 1:1',
+    );
+  }
+  const hex64 = /^[0-9a-f]{64}$/u;
+  for (const entry of identities) {
+    assertNonEmpty(entry.argv0Realpath, 'argv0Realpath');
+    if (!hex64.test(entry.argvSha256)) {
+      throw new OutcomeLogError('INVALID_EVENT', 'argvSha256 must be 64 lowercase hex chars');
+    }
+    if (entry.argv0Sha256 === null) {
+      if (typeof entry.argv0DigestError !== 'string' || entry.argv0DigestError.length === 0) {
+        throw new OutcomeLogError(
+          'INVALID_EVENT',
+          'argv0DigestError required when argv0Sha256 is null',
+        );
+      }
+    } else if (!hex64.test(entry.argv0Sha256)) {
+      throw new OutcomeLogError(
+        'INVALID_EVENT',
+        'argv0Sha256 must be 64 lowercase hex chars or null',
+      );
+    }
+  }
   const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
   const routeId = computeRouteId(taskId);
   return {
@@ -167,6 +210,15 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
     cohort_index: input.cohortIndex,
     candidate_id: input.candidateId,
     ranked_candidates: [...input.rankedCandidates],
+    candidate_identities: identities.map((entry) => ({
+      candidate_id: entry.candidateId,
+      argv0_realpath: entry.argv0Realpath,
+      argv0_sha256: entry.argv0Sha256,
+      argv_sha256: entry.argvSha256,
+      ...(entry.argv0DigestError !== undefined
+        ? { argv0_digest_error: entry.argv0DigestError }
+        : {}),
+    })),
     seed: parseRouteSeed(input.seed),
     config_sha256: input.configSha256,
     profile_sha256: input.profileSha256,

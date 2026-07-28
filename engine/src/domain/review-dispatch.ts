@@ -1,4 +1,5 @@
 import { newRouteSeed } from './beta-sampler.js';
+import { computeCandidateIdentities } from './candidate-identity.js';
 import {
   DISPATCH_EXIT_CODES,
   dispatchReview,
@@ -213,6 +214,7 @@ export const runReviewDispatch = async (
     // route.decided so a Thompson decision is exactly replayable.
     const seed = deps.seed ?? newRouteSeed();
     const rank = rankReviewers(eligible, policyArm, { seed, events });
+    const candidateIdentities = computeCandidateIdentities(rank.ranked);
 
     const routedAtMs = now().getTime();
     const routedAt = new Date(routedAtMs).toISOString();
@@ -227,6 +229,7 @@ export const runReviewDispatch = async (
         cohortIndex,
         candidateId: rank.ranked[0]!.name,
         rankedCandidates: rank.ranked.map((c) => c.name),
+        candidateIdentities,
         seed,
         configSha256: loaded.configSha256,
         profileSha256: computeProfileSha256(profile),
