@@ -118,7 +118,26 @@ describe('hot path', () => {
       candidate_id: 'codex',
       seed: SEED,
       deadline_at: '2026-07-30T12:00:00.000Z', // routed_at + 168h
+      profile_facets: {
+        author_lineage: 'human:alice',
+        languages: ['python'],
+        risk_tags: [],
+        changed_path_count: 1,
+      },
     });
+    expect(log.events[0]!['profile_sha256']).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('a credential-shaped changed_path rides only inside the profile digest, never the payload', async () => {
+    writeConfig([{ name: 'codex', argv: [fixture('codex.sh', okScript('codex'))] }]);
+    // Would trip the secret tripwire if the path appeared on the event; the
+    // digest-only design is what keeps a large or hostile diff dispatchable.
+    const trap = `docs/ghp_${'a'.repeat(20)}.md`;
+    const { exitCode } = await run({ ...PROFILE, changed_paths: [trap, 'src/app.py'].sort() });
+    expect(exitCode).toBe(0);
+    const decided = readOutcomeLog(logPath).events[0]!;
+    expect(JSON.stringify(decided)).not.toContain('ghp_');
+    expect(decided['profile_sha256']).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('thompson arm: seeded, deterministic, one-line explain', async () => {

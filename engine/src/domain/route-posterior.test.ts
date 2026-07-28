@@ -21,6 +21,13 @@ const routeInput = (pr: number, overrides: Partial<RouteDecidedInput> = {}): Rou
   rankedCandidates: ['claude', 'codex', 'gemini'],
   seed: SEED,
   configSha256: 'c'.repeat(64),
+  profileSha256: 'a'.repeat(64),
+  profileFacets: {
+    authorLineage: 'human:alice',
+    languages: ['python'],
+    riskTags: [],
+    changedPathCount: 1,
+  },
   routedAt: '2026-07-23T12:00:00Z',
   deadlineAt: '2026-07-30T12:00:00Z',
   ...overrides,
@@ -74,6 +81,44 @@ describe('event builders', () => {
       /unknown outcome/,
     );
     expect(() => buildRouteDecided(routeInput(3, { seed: 'short' }))).toThrow(/invalid route seed/);
+  });
+
+  it('route.decided carries profile_sha256 + profile_facets (schema-freeze v1)', () => {
+    const event = buildRouteDecided(routeInput(4));
+    expect(event['profile_sha256']).toBe('a'.repeat(64));
+    expect(event['profile_facets']).toStrictEqual({
+      author_lineage: 'human:alice',
+      languages: ['python'],
+      risk_tags: [],
+      changed_path_count: 1,
+    });
+  });
+
+  it('fails closed on a missing or malformed profile digest / facets, naming the field only', () => {
+    expect(() => buildRouteDecided(routeInput(5, { profileSha256: '' }))).toThrow(
+      /profileSha256 must be 64 lowercase hex/,
+    );
+    expect(() => buildRouteDecided(routeInput(5, { profileSha256: 'A'.repeat(64) }))).toThrow(
+      /profileSha256 must be 64 lowercase hex/,
+    );
+    expect(() => buildRouteDecided(routeInput(5, { profileSha256: 'a'.repeat(63) }))).toThrow(
+      /profileSha256 must be 64 lowercase hex/,
+    );
+    expect(() => buildRouteDecided(routeInput(5, { profileFacets: undefined as never }))).toThrow(
+      /profileFacets required/,
+    );
+    expect(() =>
+      buildRouteDecided(
+        routeInput(5, {
+          profileFacets: {
+            authorLineage: 'human:alice',
+            languages: ['python'],
+            riskTags: [],
+            changedPathCount: -1,
+          },
+        }),
+      ),
+    ).toThrow(/changedPathCount must be a non-negative integer/);
   });
 });
 

@@ -18,7 +18,13 @@ import {
 } from './outcome-log.js';
 import { buildRouteDecided, POLICY_ARMS, type PolicyArm } from './route-posterior.js';
 import { loadRoutingConfig } from './routing-config.js';
-import { assertLiteralLoopbackOnly, parseTaskProfile, type TaskProfile } from './task-profile.js';
+import {
+  assertLiteralLoopbackOnly,
+  computeProfileSha256,
+  parseTaskProfile,
+  profileFacets,
+  type TaskProfile,
+} from './task-profile.js';
 
 /**
  * R2.4 wiring for the AgentDex PR-review slice (frozen baseline 2026-07-23,
@@ -202,6 +208,8 @@ export const runReviewDispatch = async (
         rankedCandidates: rank.ranked.map((c) => c.name),
         seed,
         configSha256: loaded.configSha256,
+        profileSha256: computeProfileSha256(profile),
+        profileFacets: profileFacets(profile),
         routedAt,
         deadlineAt,
         ...(rank.posteriors !== null ? { posteriors: rank.posteriors } : {}),

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   assertLiteralLoopbackOnly,
   CANONICAL_LANGUAGES,
+  computeProfileSha256,
   parseTaskProfile,
+  profileFacets,
   RISK_TAGS,
 } from './task-profile.js';
 
@@ -213,5 +215,70 @@ describe('literal-loopback guard (assertLiteralLoopbackOnly)', () => {
     rejects('http://a@b@localhost:3456/'); // double-@ smuggle
     rejects('http://user:pass@localhost:3456/');
     accepts('http://user@api.github.com/repos');
+  });
+});
+
+describe('computeProfileSha256 (schema-freeze v1)', () => {
+  const wide = {
+    repo: 'acme/widgets',
+    pr: 7,
+    head_sha: 'e'.repeat(40),
+    author_lineage: 'human:alice',
+    languages: ['typescript', 'python'],
+    changed_paths: ['a/one.py', 'b/two.ts'],
+    risk_tags: ['ci_config', 'auth_security'],
+  };
+
+  it('is deterministic across raw-JSON spellings of one semantic profile', () => {
+    const a = computeProfileSha256(parseTaskProfile(JSON.stringify(wide)));
+    // Key order shuffled, whitespace added, languages/risk_tags permuted.
+    const b = computeProfileSha256(
+      parseTaskProfile(
+        JSON.stringify(
+          {
+            risk_tags: ['auth_security', 'ci_config'],
+            languages: ['python', 'typescript'],
+            changed_paths: ['a/one.py', 'b/two.ts'],
+            author_lineage: 'human:alice',
+            head_sha: 'e'.repeat(40),
+            pr: 7,
+            repo: 'acme/widgets',
+          },
+          null,
+          2,
+        ),
+      ),
+    );
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(b).toBe(a);
+  });
+
+  it('changes on every single-field mutation', () => {
+    const digest = (o: Record<string, unknown>): string =>
+      computeProfileSha256(parseTaskProfile(JSON.stringify({ ...wide, ...o })));
+    const baseline = digest({});
+    const mutants = [
+      digest({ pr: 8 }),
+      digest({ changed_paths: ['a/one.py'] }),
+      digest({ author_lineage: 'human:bob' }),
+      digest({ head_sha: 'e'.repeat(39) + 'f' }),
+      digest({ languages: ['python'] }),
+      digest({ repo: 'acme/gadgets' }),
+      digest({ risk_tags: ['ci_config'] }),
+    ];
+    for (const m of mutants) expect(m).not.toBe(baseline);
+    expect(new Set([baseline, ...mutants]).size).toBe(8);
+  });
+
+  it('facets are the canonicalized projection of the digest preimage', () => {
+    const parsed = parseTaskProfile(
+      JSON.stringify({ ...wide, languages: ['typescript', 'python'] }),
+    );
+    expect(profileFacets(parsed)).toStrictEqual({
+      authorLineage: 'human:alice',
+      languages: ['python', 'typescript'], // sorted, same order the digest hashed
+      riskTags: ['auth_security', 'ci_config'],
+      changedPathCount: 2,
+    });
   });
 });

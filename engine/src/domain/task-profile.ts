@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { OutcomeLogError } from './outcome-log.js';
 import {
   CANONICAL_LANGUAGES,
@@ -171,6 +173,56 @@ export const parseTaskProfile = (raw: string): TaskProfile => {
     riskTags: riskTags as RiskTag[],
   };
 };
+
+/**
+ * SHA-256 over the canonical profile bytes (schema-freeze v1, approved
+ * 2026-07-28). The facade builds the profile from live GitHub diff state at
+ * route time and its derivation tie-breaks live outside this repo, so what
+ * the router saw is not reliably re-derivable later — this digest pins it.
+ *
+ * Canonical form is frozen: domain prefix `pr-review-profile-v1` + NUL (the
+ * computeRouteId/computeFinalId convention), then no-whitespace JSON with
+ * snake_case keys in PROFILE_FIELDS declaration order. languages/risk_tags
+ * are sorted HERE (their wire order is facade-determined and unvalidated);
+ * changed_paths is used as-is because byte-sortedness is enforced at parse.
+ * Sort note: both vocabularies are closed ASCII sets, so default UTF-16 sort
+ * equals byte order. Changing ANY of this after the first cohort event forks
+ * digest lineages mid-log — do not touch.
+ */
+export const computeProfileSha256 = (profile: TaskProfile): string => {
+  const canonical = JSON.stringify({
+    repo: profile.repo,
+    pr: profile.pr,
+    head_sha: profile.headSha,
+    author_lineage: profile.authorLineage,
+    languages: [...profile.languages].sort(),
+    changed_paths: profile.changedPaths,
+    risk_tags: [...profile.riskTags].sort(),
+  });
+  return createHash('sha256').update(`pr-review-profile-v1\0${canonical}`, 'utf8').digest('hex');
+};
+
+export interface ProfileFacets {
+  readonly authorLineage: string;
+  readonly languages: ReadonlyArray<string>;
+  readonly riskTags: ReadonlyArray<string>;
+  readonly changedPathCount: number;
+}
+
+/**
+ * Bounded projection of the digest preimage that rides on route.decided so
+ * Q1 subgroup slicing (language / risk / lineage) stays a pure log fold.
+ * Arrays carry the SAME canonical sorted order the digest hashed. The full
+ * changed_paths list rides only inside the digest: paths are unbounded
+ * against the frozen 64 KiB line cap, and credential-shaped path names would
+ * false-positive the secret tripwire.
+ */
+export const profileFacets = (profile: TaskProfile): ProfileFacets => ({
+  authorLineage: profile.authorLineage,
+  languages: [...profile.languages].sort(),
+  riskTags: [...profile.riskTags].sort(),
+  changedPathCount: profile.changedPaths.length,
+});
 
 // --- literal-loopback guard -------------------------------------------------
 

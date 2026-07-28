@@ -53,6 +53,19 @@ export interface RouteDecidedInput {
   readonly routedAt: string;
   readonly deadlineAt: string;
   /**
+   * REQUIRED (schema-freeze v1): computeProfileSha256 of the exact profile
+   * the router consumed, plus its bounded facets projection. The profile is
+   * built from live GitHub state at route time and is otherwise
+   * unrecoverable once head_sha diffs vanish — see task-profile.ts.
+   */
+  readonly profileSha256: string;
+  readonly profileFacets: {
+    readonly authorLineage: string;
+    readonly languages: ReadonlyArray<string>;
+    readonly riskTags: ReadonlyArray<string>;
+    readonly changedPathCount: number;
+  };
+  /**
    * Posterior snapshot the Thompson draw consumed (canonical order). Makes
    * the replay tuple self-contained: (seed, posteriors, canonical order)
    * reproduces the draw even if concurrent appends land between this
@@ -92,6 +105,27 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
   assertNonEmpty(input.configSha256, 'configSha256');
   assertNonEmpty(input.routedAt, 'routedAt');
   assertNonEmpty(input.deadlineAt, 'deadlineAt');
+  if (!/^[0-9a-f]{64}$/u.test(input.profileSha256)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'profileSha256 must be 64 lowercase hex chars');
+  }
+  const facets = input.profileFacets as RouteDecidedInput['profileFacets'] | null | undefined;
+  if (facets === null || facets === undefined) {
+    throw new OutcomeLogError('INVALID_EVENT', 'profileFacets required');
+  }
+  assertNonEmpty(facets.authorLineage, 'profileFacets.authorLineage');
+  // Validate through unknown aliases: Array.isArray would otherwise narrow
+  // the ReadonlyArray<string> fields to any[] at the spread below.
+  const languagesUnknown: unknown = facets.languages;
+  const riskTagsUnknown: unknown = facets.riskTags;
+  if (!Array.isArray(languagesUnknown) || !Array.isArray(riskTagsUnknown)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'profileFacets arrays required');
+  }
+  if (!Number.isInteger(facets.changedPathCount) || facets.changedPathCount < 0) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      'profileFacets.changedPathCount must be a non-negative integer',
+    );
+  }
   const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
   const routeId = computeRouteId(taskId);
   return {
@@ -109,6 +143,13 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
     ranked_candidates: [...input.rankedCandidates],
     seed: parseRouteSeed(input.seed),
     config_sha256: input.configSha256,
+    profile_sha256: input.profileSha256,
+    profile_facets: {
+      author_lineage: facets.authorLineage,
+      languages: [...facets.languages],
+      risk_tags: [...facets.riskTags],
+      changed_path_count: facets.changedPathCount,
+    },
     routed_at: input.routedAt,
     deadline_at: input.deadlineAt,
     ...(input.posteriors !== undefined

@@ -125,6 +125,13 @@ describe('thompson rank', () => {
         rankedCandidates: ['gemini'],
         seed: SEED,
         configSha256: 'c'.repeat(64),
+        profileSha256: 'a'.repeat(64),
+        profileFacets: {
+          authorLineage: 'human:alice',
+          languages: ['python'],
+          riskTags: [],
+          changedPathCount: 1,
+        },
         routedAt: '2026-07-23T12:00:00Z',
         deadlineAt: '2026-07-30T12:00:00Z',
       }),
