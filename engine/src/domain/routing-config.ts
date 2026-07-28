@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { OutcomeLogError } from './outcome-log.js';
+import { assertNoSecretMaterial, OutcomeLogError } from './outcome-log.js';
 import { isValidCapability, WORKER_LINEAGES } from './review-vocab.js';
 
 /**
@@ -219,6 +219,17 @@ const validateCandidate = (value: unknown, index: number): CandidateConfig => {
   );
   if (!path.isAbsolute(argvStrings[0]!)) {
     throw invalid(`candidates[${index}].argv[0] must be an absolute path`);
+  }
+  // A credential pasted into argv would otherwise be accepted and handed to
+  // spawn(), i.e. into /proc/<pid>/cmdline, readable by every same-uid
+  // process. Rethrown through invalid() so the kind stays INVALID_EVENT: a
+  // bad config value is caller fault (invalid_input, exit 2), not store
+  // trouble (state_error, exit 74) — and the tripwire's message already
+  // names only the field path, never the match.
+  try {
+    assertNoSecretMaterial(argvStrings, `candidates[${index}].argv`);
+  } catch (error) {
+    throw invalid((error as OutcomeLogError).message);
   }
   const capabilities = record['capabilities'];
   if (!Array.isArray(capabilities) || capabilities.length === 0) {

@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { OutcomeLogError } from './outcome-log.js';
 import {
   assertNoDuplicateKeys,
   CONFIG_ENV_OVERRIDE,
@@ -173,6 +174,29 @@ describe('schema validation — fail closed', () => {
     ['zero priority', candidateMutant((c) => (c['static_priority'] = 0)), /positive integer/],
   ])('rejects %s', (_label, mutate, pattern) => {
     expect(() => parseRoutingConfig(raw(mutate))).toThrow(pattern);
+  });
+
+  it('rejects a credential-shaped argv value, naming the field path and never the value', () => {
+    const canary = `sk-${'canary0123456789'.repeat(2)}`;
+    let thrown: unknown;
+    try {
+      parseRoutingConfig(
+        raw(candidateMutant((c) => (c['argv'] = ['/opt/agentdex/bin/review', canary]))),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OutcomeLogError);
+    const err = thrown as OutcomeLogError;
+    // INVALID_EVENT, not SECRET_MATERIAL: review-dispatch classifies on kind,
+    // and a bad config value must land in invalid_input (exit 2), not
+    // state_error (exit 74) — the operator should look at the config they
+    // just edited, not the outcome log.
+    expect(err.kind).toBe('INVALID_EVENT');
+    expect(err.message).toMatch(/credential-shaped value at candidates\[0\]\.argv\[1\]/);
+    // Neither the value nor any identifying fragment of it is echoed.
+    expect(err.message).not.toContain(canary);
+    expect(err.message).not.toContain('canary0123456789');
   });
 
   it('rejects duplicate candidate names and duplicate priorities', () => {
