@@ -970,6 +970,8 @@ export class DispatchCommand extends Command {
   private async appendAllocationLedger(): Promise<void> {
     if (this.taskType === undefined || this.taskType.length === 0) return;
     const current = (await this.fs.read(this.ledger)) ?? '';
-    await this.fs.write(this.ledger, `${current}${this.taskType}\t${this.target}\n`);
+    await this.fs.write(this.ledger, `${current}${this.taskType}\t${this.target}\n`, {
+      private: true,
+    });
   }
 }

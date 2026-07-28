@@ -172,7 +172,9 @@ export class FsExperienceStore implements ExperienceStore {
       ...(supersedes.length === 0 ? {} : { supersedes }),
       body: input.body,
     };
-    await this.fs.write(this.path(method.workspace, method.slug), renderMethod(method));
+    await this.fs.write(this.path(method.workspace, method.slug), renderMethod(method), {
+      private: true,
+    });
     return ok(method);
   }
 
@@ -239,7 +241,9 @@ export class FsExperienceStore implements ExperienceStore {
       trustKind: 'trusted',
       confirmedBy,
     };
-    await this.fs.write(this.path(promoted.workspace, promoted.slug), renderMethod(promoted));
+    await this.fs.write(this.path(promoted.workspace, promoted.slug), renderMethod(promoted), {
+      private: true,
+    });
     return ok(promoted);
   }
 

@@ -112,6 +112,8 @@ export class BetaBernoulliAllocator implements AllocationStrategy {
   }
 
   private async save(state: StrategyState): Promise<void> {
-    await this.fs.write(this.path(), `${JSON.stringify(copyState(state), null, 2)}\n`);
+    await this.fs.write(this.path(), `${JSON.stringify(copyState(state), null, 2)}\n`, {
+      private: true,
+    });
   }
 }

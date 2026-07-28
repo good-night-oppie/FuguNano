@@ -49,6 +49,6 @@ export class RuntimeSync {
 
   /** Record the current version as the new baseline (call after a successful adapt). */
   async record(version: string): Promise<void> {
-    await this.fs.write(this.stampPath, `${version}\n`);
+    await this.fs.write(this.stampPath, `${version}\n`, { private: true });
   }
 }

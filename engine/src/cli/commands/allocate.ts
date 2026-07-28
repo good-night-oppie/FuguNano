@@ -176,10 +176,12 @@ class LegacyAllocationStore {
 
   async saveState(state: StrategyState): Promise<void> {
     if (state.length === 0) {
-      await this.fs.write(this.paths.stats, '');
+      await this.fs.write(this.paths.stats, '', { private: true });
       return;
     }
-    await this.fs.write(this.paths.stats, `${state.map(stateLine).join('\n')}\n`);
+    await this.fs.write(this.paths.stats, `${state.map(stateLine).join('\n')}\n`, {
+      private: true,
+    });
   }
 
   async removeStats(): Promise<void> {
@@ -247,7 +249,7 @@ class LegacyAllocationStore {
   }
 
   async clearLedger(path = this.paths.ledger): Promise<void> {
-    await this.fs.write(path, '');
+    await this.fs.write(path, '', { private: true });
   }
 
   async ledgerRows(path = this.paths.ledger): Promise<readonly (readonly [string, string])[]> {

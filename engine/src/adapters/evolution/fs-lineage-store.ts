@@ -29,7 +29,9 @@ export class FsLineageStore {
   async put(entry: EvolutionLineageEntry): Promise<Result<void, LineageStoreError>> {
     const gated = gatePromotion(entry);
     if (!gated.ok) return err({ kind: 'forbidden-promotion', detail: gated.error });
-    await this.fs.write(this.path(entry.id), renderEvolutionLineageEntry(entry));
+    await this.fs.write(this.path(entry.id), renderEvolutionLineageEntry(entry), {
+      private: true,
+    });
     return ok(undefined);
   }
 

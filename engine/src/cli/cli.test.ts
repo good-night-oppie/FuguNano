@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -338,6 +338,8 @@ describe('fugue CLI', () => {
         expect(secretsText).toContain(`${key}=`);
       }
       expect(await readFile(providerConfig, 'utf8')).toContain('version = 2');
+      expect((await stat(secrets)).mode & 0o777).toBe(0o600);
+      expect((await stat(providerConfig)).mode & 0o777).toBe(0o600);
     });
 
     it('rejects mutually exclusive dry-run and write modes', async () => {

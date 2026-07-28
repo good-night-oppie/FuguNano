@@ -231,7 +231,7 @@ export class SkillsCommand extends Command {
     }
 
     const refs = await this.scan();
-    await this.fs.write(catalog, renderCatalog(refs));
+    await this.fs.write(catalog, renderCatalog(refs), { private: true });
     if (quiet) return 0;
     this.context.stdout.write(`✓ catalog built: ${catalog} — ${String(refs.length)} skills\n`);
     const bySource = new Map<SkillSourceKind, { total: number; functional: number }>();

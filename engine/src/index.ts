@@ -351,7 +351,7 @@ export type {
 // Infra — injected IO
 export type { Clock } from './infra/clock.js';
 export { systemClock } from './infra/clock.js';
-export type { FileSystem } from './infra/file-system.js';
+export type { FileSystem, WriteOptions } from './infra/file-system.js';
 export type { CommandRunner, CommandResult, CommandOptions } from './infra/command-runner.js';
 export type { Rng } from './infra/rng.js';
 export { systemRng } from './infra/rng.js';

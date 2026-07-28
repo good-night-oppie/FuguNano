@@ -117,6 +117,8 @@ export class PersistentReviewLoop implements ReviewLoop {
   }
 
   private async save(rounds: readonly LoopRound[]): Promise<void> {
-    await this.fs.write(this.path(), `${JSON.stringify(copyRounds(rounds), null, 2)}\n`);
+    await this.fs.write(this.path(), `${JSON.stringify(copyRounds(rounds), null, 2)}\n`, {
+      private: true,
+    });
   }
 }
