@@ -1,12 +1,17 @@
 /**
  * Redaction + slug helpers for experience memory (pure).
  *
- * `containsSecret` uses the same fingerprint as scripts/scan-secrets.ts — a
- * plaintext key must never enter the experience store.
+ * `containsSecret` is the experience store's admission boundary: a plaintext
+ * credential must never enter the store. It used to carry its own copy of the
+ * three fingerprints in scripts/scan-secrets.ts, which meant common GitHub,
+ * Slack, AWS, npm and credentialed-URL shapes walked straight in. It now
+ * delegates to the shared fingerprint set, which is a strict superset of those
+ * original three — see domain/secret-fingerprint.ts for why that direction is
+ * enforced by a test rather than left to review.
  */
-const SECRET_RE = /sk-[A-Za-z0-9_-]{20,}|tp-[a-z0-9]{30,}|[0-9a-f]{32}\.[A-Za-z0-9]{16}/u;
+import { containsSecretMaterial } from './secret-fingerprint.js';
 
-export const containsSecret = (text: string): boolean => SECRET_RE.test(text);
+export const containsSecret = (text: string): boolean => containsSecretMaterial(text);
 
 /** space/slash → '-', drop quotes/backticks (bash `slugify`). */
 export const slugify = (title: string): string =>
