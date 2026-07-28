@@ -16,8 +16,10 @@ import {
   OutcomeLogError,
   readOutcomeLog,
   resolveOutcomeLogPath,
+  type OutcomeEvent,
 } from './outcome-log.js';
 import {
+  buildOutcomeFinalized,
   buildRouteDecided,
   POLICY_ARMS,
   assertValidCohortIndex,
@@ -57,13 +59,17 @@ export const OUTCOME_WINDOW_HOURS = 168;
 
 export const MACHINE_FORMAT = 1;
 
+/** Inclusive ceiling on retry_epoch (0..MAX). Epoch 4 is never created. */
+export const MAX_RETRY_EPOCHS = 3;
+
 export type MachineStatus =
   | 'completed'
   | 'no_eligible_agent'
   | 'dispatch_failed'
   | 'effect_unknown'
   | 'invalid_input'
-  | 'state_error';
+  | 'state_error'
+  | 'duplicate_route';
 
 const STATUS_BY_STATE: Record<DispatchState, MachineStatus> = {
   COMPLETED: 'completed',
@@ -71,6 +77,8 @@ const STATUS_BY_STATE: Record<DispatchState, MachineStatus> = {
   DISPATCH_FAILED: 'dispatch_failed',
   EFFECT_UNKNOWN: 'effect_unknown',
 };
+
+export type PriorTerminalState = 'COMPLETED' | 'EFFECT_UNKNOWN' | 'DISPATCH_FAILED' | null;
 
 export interface ReviewDispatchDeps {
   readonly env: Record<string, string | undefined>;
@@ -156,6 +164,231 @@ const parseCohortIndexRaw = (cohortIndexRaw: string | undefined): number | null 
   return Number(trimmed);
 };
 
+const readPriorTerminalState = (
+  events: ReadonlyArray<OutcomeEvent>,
+  routeId: string,
+): PriorTerminalState => {
+  for (const event of events) {
+    if (event.event_type !== 'dispatch.terminal' || event.route_id !== routeId) continue;
+    const state = event['terminal_state'];
+    if (state === 'COMPLETED' || state === 'EFFECT_UNKNOWN' || state === 'DISPATCH_FAILED') {
+      return state;
+    }
+  }
+  return null;
+};
+
+const isEpochRetryable = (events: ReadonlyArray<OutcomeEvent>, routeId: string): boolean => {
+  for (const event of events) {
+    if (event.event_type === 'dispatch.terminal' && event.route_id === routeId) {
+      if (event['terminal_state'] === 'DISPATCH_FAILED') return true;
+    }
+  }
+  for (const event of events) {
+    if (event.event_type !== 'outcome.finalized' || event.route_id !== routeId) continue;
+    if (event['outcome'] === 'CENSORED' && event['reason_code'] === 'operator_abandoned') {
+      return true;
+    }
+  }
+  return false;
+};
+
+const duplicateRouteReason = (prior: PriorTerminalState, capReached: boolean): string => {
+  if (capReached) return 'retry epoch cap reached; refusing to re-dispatch';
+  if (prior === 'COMPLETED') return 'route already completed; refusing to re-dispatch';
+  if (prior === 'EFFECT_UNKNOWN') {
+    return 'route terminated with unknown effect; refusing to re-dispatch';
+  }
+  if (prior === 'DISPATCH_FAILED') return 'retry epoch cap reached; refusing to re-dispatch';
+  return 'route decided without a terminal receipt; refusing to re-dispatch';
+};
+
+export type RetryDispatchDecision =
+  | {
+      readonly kind: 'dispatch';
+      readonly retryEpoch: number;
+      readonly supersedesRouteId: string | null;
+      readonly routeId: string;
+    }
+  | {
+      readonly kind: 'duplicate_route';
+      readonly retryEpoch: number;
+      readonly routeId: string;
+      readonly priorTerminalState: PriorTerminalState;
+      readonly reason: string;
+    };
+
+/**
+ * Pure pre-append retry gate over the events already read. Decides whether
+ * this task may open a (possibly new) epoch, or must seal duplicate_route.
+ */
+export const resolveRetryDispatch = (
+  events: ReadonlyArray<OutcomeEvent>,
+  taskId: string,
+): RetryDispatchDecision => {
+  let highest: number | null = null;
+  for (let epoch = 0; epoch <= MAX_RETRY_EPOCHS; epoch += 1) {
+    const candidateRouteId = computeRouteId(taskId, epoch);
+    if (
+      events.some(
+        (event) => event.event_type === 'route.decided' && event.route_id === candidateRouteId,
+      )
+    ) {
+      highest = epoch;
+    }
+  }
+  if (highest === null) {
+    return {
+      kind: 'dispatch',
+      retryEpoch: 0,
+      supersedesRouteId: null,
+      routeId: computeRouteId(taskId, 0),
+    };
+  }
+  const priorRouteId = computeRouteId(taskId, highest);
+  const priorTerminalState = readPriorTerminalState(events, priorRouteId);
+  const retryable = isEpochRetryable(events, priorRouteId);
+  const nextEpoch = highest + 1;
+  if (retryable && nextEpoch <= MAX_RETRY_EPOCHS) {
+    return {
+      kind: 'dispatch',
+      retryEpoch: nextEpoch,
+      supersedesRouteId: priorRouteId,
+      routeId: computeRouteId(taskId, nextEpoch),
+    };
+  }
+  return {
+    kind: 'duplicate_route',
+    retryEpoch: highest,
+    routeId: priorRouteId,
+    priorTerminalState,
+    reason: duplicateRouteReason(priorTerminalState, retryable && nextEpoch > MAX_RETRY_EPOCHS),
+  };
+};
+
+/** Highest epoch with a route.decided for this task, or null if none. */
+export const findHighestRouteEpoch = (
+  events: ReadonlyArray<OutcomeEvent>,
+  taskId: string,
+): number | null => {
+  let highest: number | null = null;
+  for (let epoch = 0; epoch <= MAX_RETRY_EPOCHS; epoch += 1) {
+    const candidateRouteId = computeRouteId(taskId, epoch);
+    if (
+      events.some(
+        (event) => event.event_type === 'route.decided' && event.route_id === candidateRouteId,
+      )
+    ) {
+      highest = epoch;
+    }
+  }
+  return highest;
+};
+
+const duplicateRouteOutcome = (
+  taskId: string,
+  decision: Extract<RetryDispatchDecision, { kind: 'duplicate_route' }>,
+): ReviewDispatchOutcome =>
+  sealed(
+    {
+      format: MACHINE_FORMAT,
+      status: 'duplicate_route',
+      task_id: taskId,
+      route_id: decision.routeId,
+      retry_epoch: decision.retryEpoch,
+      prior_terminal_state: decision.priorTerminalState,
+      retryable: false,
+      reason: decision.reason,
+    },
+    DISPATCH_EXIT_CODES.STATE_ERROR,
+  );
+
+/**
+ * Operator abandon: seal a crash-window route (route.decided, no terminal)
+ * with CENSORED/operator_abandoned so a later dispatch may open epoch E+1.
+ * Identity is repo+pr+head_sha only — never a raw route id.
+ */
+export const abandonReviewRoute = (
+  identity: { readonly repo: string; readonly pr: number; readonly headSha: string },
+  deps: ReviewDispatchDeps,
+): ReviewDispatchOutcome => {
+  const now = deps.now ?? ((): Date => new Date());
+  try {
+    const logPath = resolveOutcomeLogPath(deps.env);
+    const { events } = readOutcomeLog(logPath);
+    const taskId = computeTaskId(identity.repo, identity.pr, identity.headSha);
+    const highest = findHighestRouteEpoch(events, taskId);
+    if (highest === null) {
+      return errorOutcome(
+        'invalid_input',
+        DISPATCH_EXIT_CODES.INVALID_INPUT,
+        'no route.decided exists for task_id',
+      );
+    }
+    const routeId = computeRouteId(taskId, highest);
+    if (events.some((e) => e.event_type === 'dispatch.terminal' && e.route_id === routeId)) {
+      return errorOutcome(
+        'duplicate_route',
+        DISPATCH_EXIT_CODES.STATE_ERROR,
+        'dispatch.terminal already exists for route_id; refusing to abandon',
+      );
+    }
+    if (events.some((e) => e.event_type === 'outcome.finalized' && e.route_id === routeId)) {
+      return errorOutcome(
+        'duplicate_route',
+        DISPATCH_EXIT_CODES.STATE_ERROR,
+        'outcome.finalized already exists for route_id; refusing to abandon',
+      );
+    }
+    const decided = events.find((e) => e.event_type === 'route.decided' && e.route_id === routeId);
+    if (decided === undefined) {
+      return errorOutcome(
+        'state_error',
+        DISPATCH_EXIT_CODES.STATE_ERROR,
+        'route.decided missing for route_id',
+      );
+    }
+    appendOutcomeEvent(
+      logPath,
+      buildOutcomeFinalized({
+        repo: identity.repo,
+        prNumber: identity.pr,
+        headSha: identity.headSha,
+        outcome: 'CENSORED',
+        reasonCode: 'operator_abandoned',
+        actualExecutor: null,
+        evidenceEventIds: [decided.event_id],
+        verifiedAt: null,
+        observedAt: now().toISOString(),
+        retryEpoch: highest,
+      }),
+    );
+    return sealed(
+      {
+        format: MACHINE_FORMAT,
+        status: 'completed',
+        task_id: taskId,
+        route_id: routeId,
+        retry_epoch: highest,
+        reason: 'route abandoned; outcome.finalized recorded',
+      },
+      DISPATCH_EXIT_CODES.COMPLETED,
+    );
+  } catch (error) {
+    if (error instanceof OutcomeLogError) {
+      return error.kind === 'INVALID_EVENT'
+        ? errorOutcome('invalid_input', DISPATCH_EXIT_CODES.INVALID_INPUT, error.message)
+        : errorOutcome('state_error', DISPATCH_EXIT_CODES.STATE_ERROR, error.message);
+    }
+    const name = error instanceof Error ? error.constructor.name : 'UnknownError';
+    return errorOutcome(
+      'state_error',
+      DISPATCH_EXIT_CODES.STATE_ERROR,
+      `unexpected ${name}; no further detail is echoed by design`,
+    );
+  }
+};
+
 /**
  * Run the frozen five-step hot path once. Never throws: every failure folds
  * into a machine JSON + exit code pair (the caller's only jobs are printing
@@ -190,7 +423,11 @@ export const runReviewDispatch = async (
     const { events } = readOutcomeLog(logPath);
 
     const taskId = computeTaskId(profile.repo, profile.pr, profile.headSha);
-    const routeId = computeRouteId(taskId);
+    const retryDecision = resolveRetryDispatch(events, taskId);
+    if (retryDecision.kind === 'duplicate_route') {
+      return duplicateRouteOutcome(taskId, retryDecision);
+    }
+    const { routeId, retryEpoch, supersedesRouteId } = retryDecision;
 
     const eligible = eligibleReviewers(loaded.config.candidates, {
       authorLineage: profile.authorLineage,
@@ -228,35 +465,54 @@ export const runReviewDispatch = async (
     const routedAtMs = now().getTime();
     const routedAt = new Date(routedAtMs).toISOString();
     const deadlineAt = new Date(routedAtMs + OUTCOME_WINDOW_HOURS * 3_600_000).toISOString();
-    const appended = appendOutcomeEvent(
-      logPath,
-      buildRouteDecided({
-        repo: profile.repo,
-        prNumber: profile.pr,
-        headSha: profile.headSha,
-        policyArm,
-        cohortIndex,
-        candidateId: rank.ranked[0]!.name,
-        rankedCandidates: rank.ranked.map((c) => c.name),
-        candidateIdentities,
-        seed,
-        configSha256: loaded.configSha256,
-        profileSha256: computeProfileSha256(profile),
-        profileFacets: profileFacets(profile),
-        routedAt,
-        deadlineAt,
-        ...(rank.posteriors !== null ? { posteriors: rank.posteriors } : {}),
-      }),
-    );
-    if (appended === 'duplicate-noop') {
-      // A byte-identical route.decided already exists (a replay with pinned
-      // seed/clock, or a crash-then-rerun). The agent may already have acted
-      // on it; running again would be a duplicate external effect with zero
-      // new evidence in the log. Fail closed — never re-dispatch.
-      throw new OutcomeLogError(
-        'DUPLICATE_ID_CONFLICT',
-        'route already recorded for this task; refusing to re-dispatch',
+    let appended: 'appended' | 'duplicate-noop';
+    try {
+      appended = appendOutcomeEvent(
+        logPath,
+        buildRouteDecided({
+          repo: profile.repo,
+          prNumber: profile.pr,
+          headSha: profile.headSha,
+          policyArm,
+          cohortIndex,
+          candidateId: rank.ranked[0]!.name,
+          rankedCandidates: rank.ranked.map((c) => c.name),
+          candidateIdentities,
+          seed,
+          configSha256: loaded.configSha256,
+          profileSha256: computeProfileSha256(profile),
+          profileFacets: profileFacets(profile),
+          routedAt,
+          deadlineAt,
+          retryEpoch,
+          supersedesRouteId,
+          ...(rank.posteriors !== null ? { posteriors: rank.posteriors } : {}),
+        }),
       );
+    } catch (error) {
+      // Concurrency race at the route.decided append only → duplicate_route.
+      // DUPLICATE_ID_CONFLICT from any later append stays state_error via the
+      // outer catch (this block does not wrap those calls).
+      if (error instanceof OutcomeLogError && error.kind === 'DUPLICATE_ID_CONFLICT') {
+        return duplicateRouteOutcome(taskId, {
+          kind: 'duplicate_route',
+          retryEpoch,
+          routeId,
+          priorTerminalState: readPriorTerminalState(events, routeId),
+          reason: 'route already recorded for this task; refusing to re-dispatch',
+        });
+      }
+      throw error;
+    }
+    if (appended === 'duplicate-noop') {
+      // Race: another writer landed the identical epoch payload first.
+      return duplicateRouteOutcome(taskId, {
+        kind: 'duplicate_route',
+        retryEpoch,
+        routeId,
+        priorTerminalState: readPriorTerminalState(events, routeId),
+        reason: 'route already recorded for this task; refusing to re-dispatch',
+      });
     }
 
     const result = await dispatchReview({

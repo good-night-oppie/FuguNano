@@ -685,15 +685,17 @@ const machineOf = (result) => {
   // 7. exact re-invocation must refuse to re-dispatch (duplicate route)
   const again = autoRun(ctx);
   const m2 = machineOf(again);
-  // Fresh OS-random seed → the second route.decided differs in payload, so
-  // the store refuses with DUPLICATE_ID_CONFLICT ("already recorded"); a
-  // pinned-seed replay would hit the duplicate-noop refusal instead. Both
-  // are the same frozen behavior: exit 74, and the agent runs exactly once.
-  suite.ok("auto: re-dispatching the same task → exit 74, refusal, agent not re-run", () =>
+  // The first dispatch COMPLETED, so the retry gate (D4) refuses before any
+  // append: retry unlocks only past a provably-never-started DISPATCH_FAILED
+  // or an operator abandon. The refusal is now the typed `duplicate_route`
+  // status — a bad-request classification, not store trouble — while the exit
+  // code stays 74 and the agent still runs exactly once.
+  suite.ok("auto: re-dispatching the same task → exit 74, duplicate_route, agent not re-run", () =>
     again.status === 74 &&
     m2 !== null &&
-    m2.status === "state_error" &&
-    /already recorded|re-dispatch/.test(m2.reason) &&
+    m2.status === "duplicate_route" &&
+    m2.retryable === false &&
+    m2.prior_terminal_state === "COMPLETED" &&
     readFileSync(ctx.logPath, "utf8").trimEnd().split("\n").length === 2,
   );
 }

@@ -143,6 +143,8 @@ describe('thompson rank', () => {
         },
         routedAt: '2026-07-23T12:00:00Z',
         deadlineAt: '2026-07-30T12:00:00Z',
+        retryEpoch: 0,
+        supersedesRouteId: null,
       }),
       buildOutcomeFinalized({
         repo: 'acme/widgets',

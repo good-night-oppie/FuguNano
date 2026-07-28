@@ -85,7 +85,15 @@ const sha256 = (input: string): string => createHash('sha256').update(input, 'ut
 export const computeTaskId = (repo: string, prNumber: number, headSha: string): string =>
   `${repo}#${prNumber}@${headSha}`;
 
-export const computeRouteId = (taskId: string): string => sha256(`pr-review-v1\0${taskId}`);
+/**
+ * Route identity. Epoch 0 is byte-identical to the pre-retry formula so
+ * existing logs keep resolving; epoch n≥1 namespaces a fresh route after a
+ * provably-never-started failure or an operator abandon.
+ */
+export const computeRouteId = (taskId: string, retryEpoch = 0): string =>
+  retryEpoch === 0
+    ? sha256(`pr-review-v1\0${taskId}`)
+    : sha256(`pr-review-v1\0${taskId}\0retry\0${String(retryEpoch)}`);
 
 export const computeAttemptId = (routeId: string, candidateId: string): string =>
   sha256(`${routeId}\0${candidateId}`);

@@ -87,6 +87,15 @@ export interface RouteDecidedInput {
     readonly changedPathCount: number;
   };
   /**
+   * Retry epoch (0..3). Epoch 0 is the first dispatch; each subsequent
+   * epoch is a fresh route id after DISPATCH_FAILED or operator abandon.
+   */
+  readonly retryEpoch: number;
+  /**
+   * Prior epoch's route_id when retryEpoch ≥ 1; must be null at epoch 0.
+   */
+  readonly supersedesRouteId: string | null;
+  /**
    * Posterior snapshot the Thompson draw consumed (canonical order). Makes
    * the replay tuple self-contained: (seed, posteriors, canonical order)
    * reproduces the draw even if concurrent appends land between this
@@ -109,6 +118,12 @@ export interface OutcomeFinalizedInput {
   readonly evidenceEventIds: ReadonlyArray<string>;
   readonly verifiedAt: string | null;
   readonly observedAt: string;
+  /**
+   * Retry epoch of the route being finalized. Defaults to 0 so legacy
+   * callers stay byte-identical; abandon of a crash-window epoch ≥1 must
+   * pass the matching epoch so computeFinalId targets that route.
+   */
+  readonly retryEpoch?: number;
 }
 
 const assertNonEmpty = (value: string, name: string): void => {
@@ -198,8 +213,27 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
       );
     }
   }
+  if (!Number.isInteger(input.retryEpoch) || input.retryEpoch < 0 || input.retryEpoch > 3) {
+    throw new OutcomeLogError('INVALID_EVENT', 'retryEpoch must be an integer in 0..3');
+  }
+  if (input.retryEpoch === 0) {
+    if (input.supersedesRouteId !== null) {
+      throw new OutcomeLogError(
+        'INVALID_EVENT',
+        'supersedesRouteId must be null when retryEpoch is 0',
+      );
+    }
+  } else if (
+    typeof input.supersedesRouteId !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(input.supersedesRouteId)
+  ) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      'supersedesRouteId must be 64 lowercase hex chars when retryEpoch >= 1',
+    );
+  }
   const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
-  const routeId = computeRouteId(taskId);
+  const routeId = computeRouteId(taskId, input.retryEpoch);
   return {
     format: OUTCOME_LOG_FORMAT,
     event_type: 'route.decided',
@@ -212,6 +246,8 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
     head_sha_at_route: input.headSha,
     policy_arm: input.policyArm,
     cohort_index: input.cohortIndex,
+    retry_epoch: input.retryEpoch,
+    supersedes_route_id: input.supersedesRouteId,
     candidate_id: input.candidateId,
     ranked_candidates: [...input.rankedCandidates],
     candidate_identities: identities.map((entry) => ({
@@ -252,8 +288,12 @@ export const buildOutcomeFinalized = (input: OutcomeFinalizedInput): OutcomeEven
     throw new OutcomeLogError('INVALID_EVENT', `unknown outcome ${String(input.outcome)}`);
   }
   assertNonEmpty(input.reasonCode, 'reasonCode');
+  const retryEpoch = input.retryEpoch ?? 0;
+  if (!Number.isInteger(retryEpoch) || retryEpoch < 0 || retryEpoch > 3) {
+    throw new OutcomeLogError('INVALID_EVENT', 'retryEpoch must be an integer in 0..3');
+  }
   const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
-  const routeId = computeRouteId(taskId);
+  const routeId = computeRouteId(taskId, retryEpoch);
   return {
     format: OUTCOME_LOG_FORMAT,
     event_type: 'outcome.finalized',

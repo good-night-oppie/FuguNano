@@ -3,12 +3,25 @@ import { join as joinPath } from 'node:path';
 
 import { Command, Option } from 'clipanion';
 
+import { abandonReviewRoute, MACHINE_FORMAT } from '../../domain/review-dispatch.js';
 import type { Candidate, SelectorConfig } from '../../domain/selector.js';
 import { DEFAULT_SELECTOR_CONFIG, route } from '../../domain/selector.js';
+import { parseTaskProfile } from '../../domain/task-profile.js';
+import { OutcomeLogError } from '../../domain/outcome-log.js';
 import { NodeCommandRunner } from '../../infra/node-command-runner.js';
 import { NodeFileSystem } from '../../infra/node-file-system.js';
 import { defaultCacheRoot } from '../default-paths.js';
 import { appendTaskAudit } from '../task-audit.js';
+
+const TASK_ID_RE = /^([a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*)#([1-9][0-9]*)@([0-9a-f]{40})$/u;
+
+const parseTaskIdFlag = (
+  raw: string,
+): { readonly repo: string; readonly pr: number; readonly headSha: string } | string => {
+  const match = TASK_ID_RE.exec(raw.trim());
+  if (match === null) return 'task-id must be repo#pr@head_sha';
+  return { repo: match[1]!, pr: Number(match[2]!), headSha: match[3]! };
+};
 
 const readStream = async (stream: AsyncIterable<Buffer | string>): Promise<string> => {
   const chunks: string[] = [];
@@ -225,5 +238,58 @@ export class RouteCommand extends Command {
       case 'ESCALATE':
         return 20;
     }
+  }
+}
+
+/**
+ * `fugue route abandon` — seal a crash-window route.decided (no
+ * dispatch.terminal) with CENSORED/operator_abandoned so a later
+ * `dispatch --auto` may open the next retry epoch.
+ *
+ * Identity is always task content (repo + pr + head_sha), never a raw
+ * route id. Accepts the same TaskProfile JSON on stdin as dispatch --auto,
+ * or `--task-id repo#pr@head_sha`.
+ */
+export class RouteAbandonCommand extends Command {
+  static override paths = [['route', 'abandon']];
+
+  taskId = Option.String('--task-id');
+
+  override async execute(): Promise<number> {
+    let identity: { readonly repo: string; readonly pr: number; readonly headSha: string };
+    if (this.taskId !== undefined) {
+      const parsed = parseTaskIdFlag(this.taskId);
+      if (typeof parsed === 'string') {
+        this.context.stdout.write(
+          `${JSON.stringify({
+            format: MACHINE_FORMAT,
+            status: 'invalid_input',
+            reason: parsed,
+          })}\n`,
+        );
+        return 2;
+      }
+      identity = parsed;
+    } else {
+      const raw = await readStream(this.context.stdin as AsyncIterable<Buffer | string>);
+      try {
+        const profile = parseTaskProfile(raw);
+        identity = { repo: profile.repo, pr: profile.pr, headSha: profile.headSha };
+      } catch (error) {
+        const reason = error instanceof OutcomeLogError ? error.message : 'profile: not valid JSON';
+        this.context.stdout.write(
+          `${JSON.stringify({
+            format: MACHINE_FORMAT,
+            status: 'invalid_input',
+            reason,
+          })}\n`,
+        );
+        return 2;
+      }
+    }
+
+    const outcome = abandonReviewRoute(identity, { env: process.env });
+    this.context.stdout.write(`${JSON.stringify(outcome.machine)}\n`);
+    return outcome.exitCode;
   }
 }

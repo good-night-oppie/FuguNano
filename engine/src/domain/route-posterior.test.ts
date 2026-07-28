@@ -58,6 +58,8 @@ const routeInput = (pr: number, overrides: Partial<RouteDecidedInput> = {}): Rou
     },
     routedAt: '2026-07-23T12:00:00Z',
     deadlineAt: '2026-07-30T12:00:00Z',
+    retryEpoch: 0,
+    supersedesRouteId: null,
     ...overrides,
     // Re-derive identities when rankedCandidates overridden without identities.
     ...(!('candidateIdentities' in overrides) && overrides.rankedCandidates !== undefined
@@ -98,6 +100,27 @@ describe('event builders', () => {
     expect(event['policy_arm']).toBe('thompson');
     expect(event['seed']).toBe(SEED);
     expect(event.event_id).toBe(event.route_id);
+    expect(event['retry_epoch']).toBe(0);
+    expect(event['supersedes_route_id']).toBeNull();
+  });
+
+  it('retry_epoch namespaces the route id and records supersedes_route_id', () => {
+    const epoch0 = buildRouteDecided(routeInput(31));
+    const epoch1 = buildRouteDecided(
+      routeInput(31, { retryEpoch: 1, supersedesRouteId: epoch0.route_id }),
+    );
+    expect(epoch1.route_id).not.toBe(epoch0.route_id);
+    expect(epoch1['retry_epoch']).toBe(1);
+    expect(epoch1['supersedes_route_id']).toBe(epoch0.route_id);
+    expect(() =>
+      buildRouteDecided(routeInput(31, { retryEpoch: 0, supersedesRouteId: epoch0.route_id })),
+    ).toThrow(/supersedesRouteId/);
+    expect(() =>
+      buildRouteDecided(routeInput(31, { retryEpoch: 1, supersedesRouteId: null })),
+    ).toThrow(/supersedesRouteId/);
+    expect(() =>
+      buildRouteDecided(routeInput(31, { retryEpoch: 4, supersedesRouteId: null })),
+    ).toThrow(/retryEpoch/);
   });
 
   it('outcome.finalized derives the frozen final id from the route', () => {
@@ -335,6 +358,49 @@ describe('fallback + attribution rules', () => {
     }
     expect(diagnostics.applied).toBe(0);
     expect(diagnostics.blockedUnattributable).toBe(3);
+  });
+
+  it('fold isolation: epoch-0 CENSORED learns nothing; epoch-1 VERIFIED_SUCCESS updates its executor', () => {
+    const epoch0 = buildRouteDecided(routeInput(32));
+    const censored = buildOutcomeFinalized(
+      finalInput(32, {
+        outcome: 'CENSORED',
+        reasonCode: 'operator_abandoned',
+        actualExecutor: null,
+        verifiedAt: null,
+        retryEpoch: 0,
+      }),
+    );
+    const epoch1 = buildRouteDecided(
+      routeInput(32, {
+        retryEpoch: 1,
+        supersedesRouteId: epoch0.route_id,
+        candidateId: 'codex',
+      }),
+    );
+    const success = buildOutcomeFinalized(
+      finalInput(32, {
+        outcome: 'VERIFIED_SUCCESS',
+        actualExecutor: 'codex',
+        retryEpoch: 1,
+      }),
+    );
+    const { posteriors, diagnostics } = foldPosteriors(
+      [epoch0, censored, epoch1, success],
+      [...CANDIDATES],
+    );
+    expect(diagnostics.blockedNoSignal).toBe(1);
+    expect(diagnostics.applied).toBe(1);
+    expect(posteriors.find((p) => p.candidateId === 'codex')).toStrictEqual({
+      candidateId: 'codex',
+      alpha: 2,
+      beta: 1,
+    });
+    expect(posteriors.find((p) => p.candidateId === 'claude')).toStrictEqual({
+      candidateId: 'claude',
+      alpha: 1,
+      beta: 1,
+    });
   });
 });
 
