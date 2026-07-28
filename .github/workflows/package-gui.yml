@@ -25,8 +25,14 @@ jobs:
       - name: install
         run: npm ci
         working-directory: benchmarks/case-d-gui/desktop
-      # npm run package = vite build + `npx electron-builder --mac` (electron-builder is not a
-      # committed dependency, so the renderer CI stays lean; npx fetches it just for this job).
+      # electron-builder is pinned to an exact version in packaging/package-lock.json and
+      # installed here, in its own manifest — kept out of the renderer install so PR CI never
+      # pays for it, while a release artifact still comes from a locked, integrity-checked
+      # toolchain rather than whatever the registry resolves at build time.
+      - name: install packaging toolchain (locked)
+        run: npm ci
+        working-directory: benchmarks/case-d-gui/desktop/packaging
+      # npm run package = vite build + the locked electron-builder from packaging/.
       - name: build renderer + package app
         run: npm run package
         working-directory: benchmarks/case-d-gui/desktop

@@ -74,4 +74,5 @@ gui-build: ## Typecheck + test + build the GUI renderer (what CI runs)
 	cd $(GUI_DIR) && npm run typecheck && npm test && npm run build
 
 gui-package: ## Package the desktop app locally (unsigned .app + .dmg → release/)
+	cd $(GUI_DIR)/packaging && npm ci
 	cd $(GUI_DIR) && npm run package

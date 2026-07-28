@@ -14,8 +14,8 @@
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "package": "npm run build && npx --yes electron-builder@^25 --mac",
-    "package:dir": "npm run build && npx --yes electron-builder@^25 --mac --dir"
+    "package": "npm run build && packaging/node_modules/.bin/electron-builder --mac",
+    "package:dir": "npm run build && packaging/node_modules/.bin/electron-builder --mac --dir"
   },
   "build": {
     "appId": "ai.bicamind.fugunano.studio",

@@ -1,0 +1,9 @@
+{
+  "name": "fugunano-gui-packaging",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned electron-builder toolchain for FuguNano Studio packaging. Isolated from the renderer install so PR CI never pays for it, and pinned to an exact version so a release artifact is reproducible.",
+  "devDependencies": {
+    "electron-builder": "25.1.8"
+  }
+}
