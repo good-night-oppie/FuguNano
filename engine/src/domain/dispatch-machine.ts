@@ -8,6 +8,7 @@ import {
   OUTCOME_LOG_FORMAT,
   type OutcomeEvent,
 } from './outcome-log.js';
+import { killProcessGroup, shouldUseProcessGroup } from './process-group.js';
 import type { CandidateConfig } from './routing-config.js';
 
 /**
@@ -122,9 +123,15 @@ const runCandidate = (
       return;
     }
 
+    // detached makes the child a process-group leader so the timeout below can
+    // signal its descendants too. Killing only the direct child bounds neither
+    // effects nor wall clock: a grandchild keeps running AND holds the inherited
+    // stdout pipe open, so the caller waits on a descriptor nobody will close.
+    const useProcessGroup = shouldUseProcessGroup(timeoutMs);
     const child = spawn(candidate.argv[0]!, candidate.argv.slice(1), {
       stdio: ['pipe', 'pipe', 'ignore'],
       shell: false,
+      ...(useProcessGroup ? { detached: true } : {}),
     });
 
     let settled = false;
@@ -137,8 +144,11 @@ const runCandidate = (
     };
 
     const timer = setTimeout(() => {
-      // A PID existed; the process is killed but its effects are unknown.
-      child.kill('SIGKILL');
+      // A PID existed; the group is killed but its effects are unknown.
+      // EFFECT_UNKNOWN semantics are deliberately unchanged — process-group
+      // termination makes the kill actually cover descendants, it does not
+      // turn an unknown effect into a known one.
+      killProcessGroup(child, 'SIGKILL', useProcessGroup);
       settle({ verdict: 'effect-unknown', detail: 'timeout', stdout });
     }, timeoutMs);
 

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
 
 import type { CommandOptions, CommandResult, CommandRunner } from './command-runner.js';
+import { killProcessGroup, shouldUseProcessGroup } from '../domain/process-group.js';
 
 /** Real subprocess runner (child_process.spawn) — the only place node:child_process is used. */
 export class NodeCommandRunner implements CommandRunner {
@@ -13,8 +14,7 @@ export class NodeCommandRunner implements CommandRunner {
     return new Promise<CommandResult>((resolve, reject) => {
       const env = options.env !== undefined ? { ...process.env, ...options.env } : process.env;
       const timeoutMs = options.timeoutMs;
-      const useProcessGroup =
-        timeoutMs !== undefined && timeoutMs > 0 && process.platform !== 'win32';
+      const useProcessGroup = shouldUseProcessGroup(timeoutMs);
       const child = spawn(command, [...args], {
         env,
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -23,17 +23,8 @@ export class NodeCommandRunner implements CommandRunner {
       let timedOut = false;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let forceKill: ReturnType<typeof setTimeout> | undefined;
-      const killChild = (signal: NodeJS.Signals): void => {
-        if (useProcessGroup && child.pid !== undefined) {
-          try {
-            process.kill(-child.pid, signal);
-            return;
-          } catch {
-            // The child may have exited before the group signal lands; fall back below.
-          }
-        }
-        child.kill(signal);
-      };
+      const killChild = (signal: NodeJS.Signals): void =>
+        killProcessGroup(child, signal, useProcessGroup);
       if (timeoutMs !== undefined && timeoutMs > 0) {
         timeout = setTimeout(() => {
           timedOut = true;

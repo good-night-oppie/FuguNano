@@ -250,4 +250,43 @@ describe('timeout override', () => {
     expect(result.state).toBe('EFFECT_UNKNOWN');
     expect(Date.now() - started).toBeLessThan(5000);
   });
+
+  // The regression node-command-runner.test.ts already has and this file did
+  // not. Killing only the direct child bounds neither effects nor wall clock:
+  // the grandchild keeps running and completes its side effect, AND it holds
+  // the inherited stdout pipe open so the dispatch waits on it.
+  const itNotOnWindows = process.platform === 'win32' ? it.skip : it;
+
+  itNotOnWindows(
+    'times out the process group so grandchildren cannot outlive it',
+    async () => {
+      const marker = path.join(dir, 'grandchild-ran');
+      const started = Date.now();
+
+      const result = await dispatchReview(
+        opts(
+          [
+            candidate(
+              'codex',
+              fixture(
+                'spawns-grandchild.sh',
+                // The grandchild inherits stdout on purpose — that is what makes
+                // a direct-child-only kill hang rather than merely leak.
+                `cat > /dev/null; (sleep 3; touch ${JSON.stringify(marker)}) & sleep 30`,
+              ),
+            ),
+          ],
+          { timeoutMs: 500 },
+        ),
+      );
+
+      expect(result.state).toBe('EFFECT_UNKNOWN');
+      expect(Date.now() - started).toBeLessThan(2500);
+
+      // Outlive the grandchild's own sleep, then assert it never got there.
+      await new Promise((resolve) => setTimeout(resolve, 3500));
+      expect(fs.existsSync(marker)).toBe(false);
+    },
+    15000,
+  );
 });
