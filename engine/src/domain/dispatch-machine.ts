@@ -44,7 +44,10 @@ export const DISPATCH_EXIT_CODES = {
 } as const;
 
 export type DispatchState =
-  'COMPLETED' | 'NO_ELIGIBLE_AGENT' | 'DISPATCH_FAILED' | 'EFFECT_UNKNOWN';
+  | 'COMPLETED'
+  | 'NO_ELIGIBLE_AGENT'
+  | 'DISPATCH_FAILED'
+  | 'EFFECT_UNKNOWN';
 
 /** Frozen user-facing strings (spec §B3). */
 export const NO_ELIGIBLE_AGENT_MESSAGE =

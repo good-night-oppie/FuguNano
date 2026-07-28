@@ -278,15 +278,17 @@ export class SmokeCommand extends Command {
       failed,
       exitCode: failed === 0 ? 0 : 1,
       harnesses: selection,
-      results: results.map((result): SmokeSummaryEntry => ({
-        harness: result.harness,
-        target: result.agent,
-        status: result.ok ? 'ok' : 'failed',
-        durationMs: Math.round(result.elapsedMs),
-        outputChars: result.outputChars,
-        ...(result.artifactPath === undefined ? {} : { artifactPath: result.artifactPath }),
-        ...(result.detail === undefined ? {} : { detail: result.detail }),
-      })),
+      results: results.map(
+        (result): SmokeSummaryEntry => ({
+          harness: result.harness,
+          target: result.agent,
+          status: result.ok ? 'ok' : 'failed',
+          durationMs: Math.round(result.elapsedMs),
+          outputChars: result.outputChars,
+          ...(result.artifactPath === undefined ? {} : { artifactPath: result.artifactPath }),
+          ...(result.detail === undefined ? {} : { detail: result.detail }),
+        }),
+      ),
     };
     await this.fs.write(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
     return summaryPath;
