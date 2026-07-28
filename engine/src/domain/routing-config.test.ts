@@ -223,6 +223,31 @@ describe('schema validation — fail closed', () => {
   });
 });
 
+describe('reserved fields (F4, operator ruling 2026-07-28)', () => {
+  it('slot_wait_seconds / max_in_flight stay validated but UNCONSUMED until the cohort dispatcher exists', () => {
+    // Spec §B5 mandates both fields; the consumer is the unbuilt R3 cohort
+    // dispatcher. This pin fails the moment production code starts reading
+    // them — at which point delete this test and the RESERVED comments on
+    // RoutingConfig, because the reservation is over.
+    const srcRoot = path.join(import.meta.dirname, '..');
+    const consumers: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
+          const text = fs.readFileSync(full, 'utf8');
+          // Property ACCESS (.field / ['field']), not declaration/validation —
+          // routing-config.ts's own schema plumbing is the reservation itself.
+          if (/(\.|\[')(slot_wait_seconds|max_in_flight)\b/u.test(text)) consumers.push(full);
+        }
+      }
+    };
+    walk(srcRoot);
+    expect(consumers).toStrictEqual([path.join(srcRoot, 'domain', 'routing-config.ts')]);
+  });
+});
+
 describe('loadRoutingConfig — bytes hash', () => {
   let dir: string;
 

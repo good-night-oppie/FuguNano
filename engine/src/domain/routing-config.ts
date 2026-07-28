@@ -54,8 +54,17 @@ export interface CandidateConfig {
 export interface RoutingConfig {
   readonly format: typeof CONFIG_FORMAT;
   readonly dispatch_timeout_seconds: number;
+  /**
+   * RESERVED, not consumed (operator ruling 2026-07-28, F4). Spec §B5 mandates
+   * this field and §B3 names "concurrency slot wait: 300s" as a run constant,
+   * but the consumer — a multi-task cohort dispatcher — is R3 territory and
+   * unbuilt; this engine dispatches one task at a time. Validated so config
+   * files stay portable to that future. A pinning test asserts nothing reads
+   * it; when the dispatcher lands, delete that pin and this paragraph.
+   */
   readonly slot_wait_seconds: number;
   readonly max_attempts: number;
+  /** RESERVED, not consumed — same ruling and rationale as slot_wait_seconds. */
   readonly max_in_flight: number;
   readonly candidates: ReadonlyArray<CandidateConfig>;
 }
