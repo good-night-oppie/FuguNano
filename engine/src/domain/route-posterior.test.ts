@@ -7,8 +7,11 @@ import {
   buildOutcomeFinalized,
   buildOutcomeFinalizedAmendment,
   buildRouteDecided,
+  countOrphanFinalizations,
+  effectiveFinalForRoute,
   FINALIZE_GRACE_HOURS,
   foldPosteriors,
+  isCohortInvalidatedByOrphans,
   type AmendReasonCode,
   type OutcomeFinalizedAmendmentInput,
   type OutcomeFinalizedInput,
@@ -808,6 +811,54 @@ describe('D9 — superseding amendments to outcome.finalized', () => {
     const added = Object.keys(amendment).filter((k) => !(k in original));
     expect(added.sort()).toStrictEqual(['amend_reason_code', 'amend_seq', 'amends']);
     expect(amendment['event_type']).toBe('outcome.finalized');
+  });
+
+  it('a corrected orphan does not count toward the cohort tripwire', () => {
+    // Adversarial-review finding: countOrphanFinalizations counted ROWS. Three
+    // orphans that were each later LIFTED by an amendment therefore still
+    // tripped cohort invalidation — discarding 50 tasks of real measurement
+    // over a machinery failure that had already been resolved.
+    const events: OutcomeEvent[] = [];
+    for (const pr of [80, 81, 82]) {
+      const { original, amendment } = amended(pr, {
+        outcome: 'CENSORED',
+        reasonCode: 'ORPHANED_SILENT',
+        verifiedAt: null,
+      });
+      events.push(original, amendment);
+    }
+    expect(countOrphanFinalizations(events)).toBe(0);
+    expect(isCohortInvalidatedByOrphans(events)).toBe(false);
+
+    // An UNCORRECTED orphan still counts — the tripwire is not disarmed.
+    const stillOrphaned = [83, 84, 85].map((pr) =>
+      buildOutcomeFinalized(
+        finalInput(pr, {
+          outcome: 'CENSORED',
+          reasonCode: 'ORPHANED_EFFECT',
+          verifiedAt: null,
+        }),
+      ),
+    );
+    expect(countOrphanFinalizations(stillOrphaned)).toBe(3);
+    expect(isCohortInvalidatedByOrphans(stillOrphaned)).toBe(true);
+  });
+
+  it('effectiveFinalForRoute is the one resolver every reader must use', () => {
+    const { route, original, amendment } = amended(86, {
+      outcome: 'CENSORED',
+      reasonCode: 'operator_abandoned',
+      verifiedAt: null,
+    });
+    const stream = [route, original, amendment];
+    const winner = effectiveFinalForRoute(stream, original.route_id);
+    expect(winner?.event_id).toBe(amendment.event_id);
+    expect(winner?.['outcome']).toBe('VERIFIED_SUCCESS');
+    // Order-independent, and undefined for a route with no final.
+    expect(effectiveFinalForRoute([amendment, original, route], original.route_id)?.event_id).toBe(
+      amendment.event_id,
+    );
+    expect(effectiveFinalForRoute(stream, 'f'.repeat(64))).toBeUndefined();
   });
 
   it('FINALIZE_GRACE_HOURS is frozen at 24', () => {

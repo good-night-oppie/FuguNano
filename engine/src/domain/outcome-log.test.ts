@@ -20,6 +20,12 @@ import {
   resolveOutcomeLogPath,
   type OutcomeEvent,
 } from './outcome-log.js';
+import {
+  buildOutcomeFinalized,
+  buildOutcomeFinalizedAmendment,
+  buildRouteDecided,
+  foldPosteriors,
+} from './route-posterior.js';
 
 let dir: string;
 let logPath: string;
@@ -404,6 +410,14 @@ describe('D10 append-side timestamp validation', () => {
 describe('D9 — amendment id + append-side amendment gate', () => {
   const h = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
 
+  const mkCensoredOriginal = (overrides: Partial<OutcomeEvent> = {}): OutcomeEvent =>
+    mkFinalized({
+      outcome: 'CENSORED',
+      reason_code: 'HEAD_DRIFT',
+      verified_at: null,
+      ...overrides,
+    });
+
   const mkAmendment = (overrides: Partial<OutcomeEvent> = {}): OutcomeEvent =>
     mkFinalized({
       event_id: computeFinalAmendId(routeId, 1),
@@ -436,7 +450,7 @@ describe('D9 — amendment id + append-side amendment gate', () => {
   });
 
   it('(l) an amendment appends alongside its original and stays idempotent', () => {
-    expect(appendOutcomeEvent(logPath, mkFinalized())).toBe('appended');
+    expect(appendOutcomeEvent(logPath, mkCensoredOriginal())).toBe('appended');
     const amendment = mkAmendment();
     expect(appendOutcomeEvent(logPath, amendment)).toBe('appended');
     expect(readOutcomeLog(logPath).events).toHaveLength(2);
@@ -451,6 +465,7 @@ describe('D9 — amendment id + append-side amendment gate', () => {
   });
 
   it('the append gate rejects malformed amendment fields by field path', () => {
+    expect(appendOutcomeEvent(logPath, mkCensoredOriginal())).toBe('appended');
     expect(() => appendOutcomeEvent(logPath, mkAmendment({ amend_seq: 0 }))).toThrow(
       /INVALID_EVENT: amend_seq/,
     );
@@ -466,15 +481,158 @@ describe('D9 — amendment id + append-side amendment gate', () => {
     expect(() => appendOutcomeEvent(logPath, mkAmendment({ amend_reason_code: '' }))).toThrow(
       /INVALID_EVENT: amend_reason_code/,
     );
-    // Amendment fields present but the id is the ORIGINAL's — this would
-    // collide with the event it claims to supersede.
+    // Amendment fields present but the id is the ORIGINAL's. Use a route whose
+    // original is NOT on disk, so dedupe cannot fire first and mask the branch
+    // under test (with the original present this is a DUPLICATE_ID_CONFLICT,
+    // which is also a correct rejection but a different one).
+    const fresh = computeRouteId(computeTaskId('acme/widgets', 55, 'e'.repeat(40)));
     expect(() =>
-      appendOutcomeEvent(logPath, mkAmendment({ event_id: computeFinalId(routeId) })),
+      appendOutcomeEvent(
+        logPath,
+        mkAmendment({ route_id: fresh, event_id: computeFinalId(fresh) }),
+      ),
     ).toThrow(/INVALID_EVENT: event_id/);
     // A partial amendment (seq without pointer) is rejected, not ignored.
     expect(() => appendOutcomeEvent(logPath, mkAmendment({ amends: undefined }))).toThrow(
       /INVALID_EVENT: amends/,
     );
+    expect(readOutcomeLog(logPath).events).toHaveLength(1);
+  });
+
+  it('an id in the amendment namespace with NO amend fields is rejected', () => {
+    // Adversarial-review finding (high): the gate originally guarded only
+    // "fields present => shape valid". A squatter carrying the seq-namespaced
+    // id and no fields appended cleanly and burned the seq-1 slot forever —
+    // the genuine amendment then died on DUPLICATE_ID_CONFLICT and the route
+    // could never be corrected again.
+    const squatter = mkFinalized({ event_id: computeFinalAmendId(routeId, 1) });
+    expect(() => appendOutcomeEvent(logPath, squatter)).toThrow(/INVALID_EVENT: amend_seq/);
+    expect(readOutcomeLog(logPath).events).toHaveLength(0);
+    // The slot is still free, so the real amendment lands.
+    expect(appendOutcomeEvent(logPath, mkCensoredOriginal())).toBe('appended');
+    expect(appendOutcomeEvent(logPath, mkAmendment())).toBe('appended');
+  });
+
+  it('rejects an amends pointer to another route, and off-vocabulary reasons', () => {
+    expect(appendOutcomeEvent(logPath, mkCensoredOriginal())).toBe('appended');
+    const other = computeRouteId(computeTaskId('acme/widgets', 99, 'b'.repeat(40)));
+    // Well-formed 64-hex, but it is a DIFFERENT route's final: durable-forever
+    // caller bug, same discipline D4 applied to supersedes_route_id.
+    expect(() =>
+      appendOutcomeEvent(
+        logPath,
+        mkAmendment({
+          route_id: other,
+          event_id: computeFinalAmendId(other, 1),
+          amends: computeFinalId(routeId),
+        }),
+      ),
+    ).toThrow(/INVALID_EVENT: amends/);
+    // The vocabulary is closed on the DURABLE artifact, not just in the builder.
+    expect(() =>
+      appendOutcomeEvent(logPath, mkAmendment({ amend_reason_code: 'BECAUSE_I_SAID_SO' })),
+    ).toThrow(/INVALID_EVENT: amend_reason_code/);
+    expect(readOutcomeLog(logPath).events).toHaveLength(1);
+  });
+
+  it('a BUILDER-produced amendment satisfies the append gate end to end', () => {
+    // Adversarial-review finding: the two halves of D9 (build-time lattice and
+    // append-time shape) were each tested alone and never against each other.
+    // A drift between them would have shipped silently.
+    const common = {
+      repo: 'acme/widgets',
+      prNumber: 42,
+      headSha: 'a'.repeat(40),
+      actualExecutor: 'claude',
+      evidenceEventIds: [],
+    };
+    const original = buildOutcomeFinalized({
+      ...common,
+      outcome: 'CENSORED',
+      reasonCode: 'HEAD_DRIFT',
+      verifiedAt: null,
+      observedAt: '2026-07-25T12:00:00.000Z',
+    });
+    expect(original.route_id).toBe(routeId);
+    expect(appendOutcomeEvent(logPath, original)).toBe('appended');
+
+    const amendment = buildOutcomeFinalizedAmendment({
+      ...common,
+      outcome: 'VERIFIED_SUCCESS',
+      reasonCode: 'LATE_APPROVAL',
+      verifiedAt: '2026-07-29T09:00:00.000Z',
+      observedAt: '2026-07-29T09:00:00.000Z',
+      amendSeq: 1,
+      amends: original.event_id,
+      priorOutcome: 'CENSORED',
+      amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+      deadlineAt: '2026-07-30T12:00:00.000Z',
+      evidenceCanonicalTimestamp: '2026-07-29T09:00:00.000Z',
+    });
+    expect(appendOutcomeEvent(logPath, amendment)).toBe('appended');
+    expect(appendOutcomeEvent(logPath, amendment)).toBe('duplicate-noop');
+
+    const back = readOutcomeLog(logPath);
+    expect(back.events).toHaveLength(2);
+    // And the fold resolves the pair to exactly one learning update.
+    const route = buildRouteDecided({
+      repo: 'acme/widgets',
+      prNumber: 42,
+      headSha: 'a'.repeat(40),
+      policyArm: 'thompson',
+      cohortIndex: null,
+      candidateId: 'claude',
+      rankedCandidates: ['claude'],
+      candidateIdentities: [
+        {
+          candidateId: 'claude',
+          argv0Realpath: '/bin/claude',
+          argv0Sha256: 'a'.repeat(64),
+          argvSha256: 'b'.repeat(64),
+        },
+      ],
+      seed: '0123456789abcdef0123456789abcdef',
+      configSha256: 'c'.repeat(64),
+      profileSha256: 'a'.repeat(64),
+      profileFacets: {
+        authorLineage: 'human:alice',
+        languages: ['python'],
+        riskTags: [],
+        changedPathCount: 1,
+      },
+      routedAt: '2026-07-23T12:00:00.000Z',
+      deadlineAt: '2026-07-30T12:00:00.000Z',
+      retryEpoch: 0,
+      supersedesRouteId: null,
+    });
+    const fold = foldPosteriors([route, ...back.events], ['claude']);
+    expect(fold.posteriors).toStrictEqual([{ candidateId: 'claude', alpha: 2, beta: 1 }]);
+    expect(fold.diagnostics.applied).toBe(1);
+    expect(fold.diagnostics.superseded).toBe(1);
+  });
+
+  it('the append gate enforces the LATTICE, not just the shape', () => {
+    // Adversarial-review finding raised independently by three lenses: a
+    // shape-only gate lets any writer that skips the builder land a forbidden
+    // transition permanently, in an append-only log. The superseded event is
+    // in the log, so the real prior outcome is known — not taken on trust.
+    expect(appendOutcomeEvent(logPath, mkFinalized())).toBe('appended'); // VERIFIED_SUCCESS
+    expect(() =>
+      appendOutcomeEvent(
+        logPath,
+        mkAmendment({ outcome: 'NOT_VERIFIED_WITHIN_WINDOW', verified_at: null }),
+      ),
+    ).toThrow(/INVALID_EVENT: outcome/); // un-verifying a verified review
+    expect(() =>
+      appendOutcomeEvent(logPath, mkAmendment({ outcome: 'CENSORED', verified_at: null })),
+    ).toThrow(/INVALID_EVENT: outcome/); // re-censoring a real observation
+    expect(readOutcomeLog(logPath).events).toHaveLength(1);
+  });
+
+  it('an amendment whose superseded event is absent is a dangling pointer', () => {
+    // Without the original present this amendment would become the effective
+    // final for a route that never had one.
+    expect(() => appendOutcomeEvent(logPath, mkAmendment())).toThrow(/INVALID_EVENT: amends/);
     expect(readOutcomeLog(logPath).events).toHaveLength(0);
   });
 

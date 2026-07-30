@@ -1,6 +1,8 @@
 import type { CandidateIdentity } from './candidate-identity.js';
 import { computeDispatchTerminalId } from './dispatch-machine.js';
 import {
+  AMEND_LATTICE,
+  AMEND_REASON_CODES,
   CANONICAL_UTC_RE,
   computeAttemptId,
   computeFinalAmendId,
@@ -11,7 +13,10 @@ import {
   MAX_RETRY_EPOCHS,
   OutcomeLogError,
   OUTCOME_LOG_FORMAT,
+  TERMINAL_OUTCOMES,
+  type AmendReasonCode,
   type OutcomeEvent,
+  type TerminalOutcome,
 } from './outcome-log.js';
 import { parseRouteSeed, type PosteriorEntry } from './beta-sampler.js';
 
@@ -41,12 +46,7 @@ import { parseRouteSeed, type PosteriorEntry } from './beta-sampler.js';
 export const POLICY_ARMS = ['static', 'thompson'] as const;
 export type PolicyArm = (typeof POLICY_ARMS)[number];
 
-export const TERMINAL_OUTCOMES = [
-  'VERIFIED_SUCCESS',
-  'NOT_VERIFIED_WITHIN_WINDOW',
-  'CENSORED',
-] as const;
-export type TerminalOutcome = (typeof TERMINAL_OUTCOMES)[number];
+export { TERMINAL_OUTCOMES, type TerminalOutcome };
 
 /**
  * D10 clock-skew gate for the (unbuilt) outcome-sync finalizer: a
@@ -87,36 +87,12 @@ export const NO_DELIVERY_EVIDENCE = 'NO_DELIVERY_EVIDENCE' as const;
 export const DELIVERY_UNRESOLVABLE = 'DELIVERY_UNRESOLVABLE' as const;
 
 /**
- * Why a superseding amendment was written (D9, closed vocabulary). Distinct
- * from the terminal `reason_code`, which keeps describing the OUTCOME; this
- * describes the CORRECTION.
+ * Why a superseding amendment was written (D9, closed vocabulary). Defined in
+ * `outcome-log.ts` so the append gate and this builder share one list without
+ * an import cycle (the D4 `MAX_RETRY_EPOCHS` precedent); re-exported here
+ * because this module is where amendment callers already look.
  */
-export const AMEND_REASON_CODES = [
-  'LATE_SIGNAL_IN_WINDOW',
-  'CENSOR_LIFTED_REOPENED',
-  'OPERATOR_CORRECTION',
-] as const;
-export type AmendReasonCode = (typeof AMEND_REASON_CODES)[number];
-
-/**
- * Monotone upgrade lattice (D9, frozen). An amendment may only move a route
- * TOWARD a decided signal, never away from one:
- *
- *   CENSORED                   → VERIFIED_SUCCESS
- *   CENSORED                   → NOT_VERIFIED_WITHIN_WINDOW
- *   NOT_VERIFIED_WITHIN_WINDOW → VERIFIED_SUCCESS
- *
- * Never FROM `VERIFIED_SUCCESS` (a verified review cannot be un-verified by a
- * later sync) and never INTO `CENSORED` (censoring is the fail-closed floor,
- * so re-censoring would let a sync erase a real observation). Same-outcome
- * "amendments" are absent by construction: they carry no new information and
- * would only add a superseded row.
- */
-const AMEND_LATTICE: ReadonlyMap<TerminalOutcome, ReadonlySet<TerminalOutcome>> = new Map([
-  ['CENSORED', new Set<TerminalOutcome>(['VERIFIED_SUCCESS', 'NOT_VERIFIED_WITHIN_WINDOW'])],
-  ['NOT_VERIFIED_WITHIN_WINDOW', new Set<TerminalOutcome>(['VERIFIED_SUCCESS'])],
-  ['VERIFIED_SUCCESS', new Set<TerminalOutcome>()],
-]);
+export { AMEND_REASON_CODES, type AmendReasonCode };
 
 /**
  * Finalizer emission policy (D9). The outcome-sync module is unbuilt; this
@@ -504,11 +480,17 @@ export const buildOutcomeFinalizedAmendment = (
   }
 
   // String comparison is only sound on identical canonical forms, so pin both
-  // to the D10 canonical-millis shape rather than assuming it.
-  if (!CANONICAL_UTC_RE.test(input.deadlineAt)) {
+  // to the D10 canonical-millis shape rather than assuming it. The regex alone
+  // is NOT canonicality: '2026-13-45T99:99:99.999Z' matches it and parses to
+  // NaN, and it sorts before every real date — so it would slip through the
+  // window check as "in window". D10's own gate pairs the regex with
+  // Date.parse for exactly this reason; mirror it.
+  const canonical = (value: string): boolean =>
+    CANONICAL_UTC_RE.test(value) && Number.isFinite(Date.parse(value));
+  if (!canonical(input.deadlineAt)) {
     throw new OutcomeLogError('INVALID_EVENT', 'deadlineAt');
   }
-  if (!CANONICAL_UTC_RE.test(input.evidenceCanonicalTimestamp)) {
+  if (!canonical(input.evidenceCanonicalTimestamp)) {
     throw new OutcomeLogError('INVALID_EVENT', 'evidenceCanonicalTimestamp');
   }
   if (input.evidenceCanonicalTimestamp > input.deadlineAt) {
@@ -600,6 +582,47 @@ const effectiveFinal = (group: ReadonlyArray<OutcomeEvent>): OutcomeEvent => {
 };
 
 /**
+ * Group the DISTINCT `outcome.finalized` events by route. Shared so every
+ * consumer of the effective-final rule resolves it identically — the rule is
+ * frozen once, not re-implemented per call site.
+ */
+const groupFinalsByRoute = (events: ReadonlyArray<OutcomeEvent>): Map<string, OutcomeEvent[]> => {
+  const byRoute = new Map<string, OutcomeEvent[]>();
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (event.event_type !== 'outcome.finalized') continue;
+    if (seen.has(event.event_id)) continue;
+    seen.add(event.event_id);
+    const group = byRoute.get(event.route_id);
+    if (group === undefined) byRoute.set(event.route_id, [event]);
+    else group.push(event);
+  }
+  return byRoute;
+};
+
+/**
+ * The single `outcome.finalized` that speaks for a route, or `undefined` if
+ * the route has none.
+ *
+ * EVERY reader that asks "how did this route end?" must go through here, not
+ * scan finalized rows. Before D9 the two were equivalent — one final per route
+ * by construction — so pre-existing readers scanned rows safely. Amendments
+ * break that equivalence, and a row-scanning reader then sees a SUPERSEDED
+ * verdict as if it still stood. Two merged units had exactly that bug latent
+ * the moment amendments existed: D4's abandon-unlock (which would re-dispatch
+ * a PR whose abandon had been lifted — a duplicate review on a live PR) and
+ * D17's orphan tripwire (which would invalidate a cohort whose orphans had all
+ * been corrected). Both now call this.
+ */
+export const effectiveFinalForRoute = (
+  events: ReadonlyArray<OutcomeEvent>,
+  routeId: string,
+): OutcomeEvent | undefined => {
+  const group = groupFinalsByRoute(events).get(routeId);
+  return group === undefined ? undefined : effectiveFinal(group);
+};
+
+/**
  * Re-fold candidate posteriors from the event stream. `candidateIds` fixes
  * the universe (and output order — callers pass the frozen canonical order);
  * every candidate starts at the Beta(1,1) prior. Events are deduplicated by
@@ -627,21 +650,10 @@ export const foldPosteriors = (
   let blockedNoSignal = 0;
   let superseded = 0;
 
-  // Effective-final resolution (D9). Group the distinct finalized events by
-  // route and learn from ONE per route, so a superseding amendment corrects
-  // the posterior instead of double-counting against the original.
-  const finalsByRoute = new Map<string, OutcomeEvent[]>();
-  const seenFinalIds = new Set<string>();
-  for (const event of events) {
-    if (event.event_type !== 'outcome.finalized') continue;
-    if (seenFinalIds.has(event.event_id)) continue;
-    seenFinalIds.add(event.event_id);
-    const group = finalsByRoute.get(event.route_id);
-    if (group === undefined) finalsByRoute.set(event.route_id, [event]);
-    else group.push(event);
-  }
-
-  for (const group of finalsByRoute.values()) {
+  // Effective-final resolution (D9): learn from ONE final per route, so a
+  // superseding amendment corrects the posterior instead of double-counting
+  // against the original.
+  for (const group of groupFinalsByRoute(events).values()) {
     superseded += group.length - 1;
     const event = effectiveFinal(group);
 
@@ -761,15 +773,19 @@ export const classifyOrphan = (
 };
 
 /**
- * Count `outcome.finalized` rows whose `reason_code` is an orphan code.
- * Non-orphan CENSORED rows (HEAD_DRIFT, operator_abandoned, …) do not count.
+ * Count ROUTES whose EFFECTIVE final carries an orphan `reason_code`.
+ * Non-orphan CENSORED finals (HEAD_DRIFT, operator_abandoned, …) do not count.
  * One log = one cohort; the tripwire is cohort-scoped.
+ *
+ * Routes, not rows (D9). Counting rows would count a superseded orphan
+ * alongside the amendment that corrected it, so three orphans that were all
+ * later resolved would invalidate an otherwise healthy cohort — discarding 50
+ * tasks of real measurement over a failure that no longer exists.
  */
 export const countOrphanFinalizations = (events: ReadonlyArray<OutcomeEvent>): number => {
   let n = 0;
-  for (const event of events) {
-    if (event.event_type !== 'outcome.finalized') continue;
-    const code = event['reason_code'];
+  for (const group of groupFinalsByRoute(events).values()) {
+    const code = effectiveFinal(group)['reason_code'];
     if (code === 'ORPHANED_EFFECT' || code === 'ORPHANED_SILENT') n += 1;
   }
   return n;

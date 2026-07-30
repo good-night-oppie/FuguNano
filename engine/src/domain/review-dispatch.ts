@@ -22,6 +22,7 @@ import {
 import {
   buildOutcomeFinalized,
   buildRouteDecided,
+  effectiveFinalForRoute,
   POLICY_ARMS,
   assertValidCohortIndex,
   type PolicyArm,
@@ -193,13 +194,18 @@ const isEpochRetryable = (events: ReadonlyArray<OutcomeEvent>, routeId: string):
   const terminal = readPriorTerminalState(events, routeId);
   if (terminal === 'COMPLETED' || terminal === 'EFFECT_UNKNOWN') return false;
   if (terminal === 'DISPATCH_FAILED') return true;
-  for (const event of events) {
-    if (event.event_type !== 'outcome.finalized' || event.route_id !== routeId) continue;
-    if (event['outcome'] === 'CENSORED' && event['reason_code'] === 'operator_abandoned') {
-      return true;
-    }
-  }
-  return false;
+  // Effective final, NOT a row scan (D9). A superseding amendment can lift an
+  // operator_abandoned CENSORED to VERIFIED_SUCCESS — that is the canonical
+  // amendment case, an abandon whose review turns out to have landed. Scanning
+  // rows would still find the superseded abandon and open a fresh epoch,
+  // re-dispatching a review onto a PR that already has one. A duplicate review
+  // on a real PR is worse than a missing one, so the lifted verdict wins.
+  const finalized = effectiveFinalForRoute(events, routeId);
+  return (
+    finalized !== undefined &&
+    finalized['outcome'] === 'CENSORED' &&
+    finalized['reason_code'] === 'operator_abandoned'
+  );
 };
 
 const duplicateRouteReason = (prior: PriorTerminalState, capReached: boolean): string => {

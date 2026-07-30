@@ -186,6 +186,54 @@ export const computeFinalId = (routeId: string): string =>
 export const MAX_AMEND_SEQ = 1;
 
 /**
+ * Terminal outcome vocabulary (frozen). Lives in the shared identity module so
+ * the append gate can enforce the amendment lattice without importing
+ * route-posterior (which imports this file). Re-exported from route-posterior.
+ */
+export const TERMINAL_OUTCOMES = [
+  'VERIFIED_SUCCESS',
+  'NOT_VERIFIED_WITHIN_WINDOW',
+  'CENSORED',
+] as const;
+export type TerminalOutcome = (typeof TERMINAL_OUTCOMES)[number];
+
+/**
+ * Monotone upgrade lattice (D9, frozen). An amendment may only move a route
+ * TOWARD a decided signal, never away from one:
+ *
+ *   CENSORED                   -> VERIFIED_SUCCESS
+ *   CENSORED                   -> NOT_VERIFIED_WITHIN_WINDOW
+ *   NOT_VERIFIED_WITHIN_WINDOW -> VERIFIED_SUCCESS
+ *
+ * Never FROM `VERIFIED_SUCCESS` (a verified review cannot be un-verified by a
+ * later sync) and never INTO `CENSORED` (censoring is the fail-closed floor, so
+ * re-censoring would let a sync erase a real observation). Same-outcome
+ * "amendments" carry no information and are absent by construction.
+ */
+export const AMEND_LATTICE: ReadonlyMap<TerminalOutcome, ReadonlySet<TerminalOutcome>> = new Map([
+  ['CENSORED', new Set<TerminalOutcome>(['VERIFIED_SUCCESS', 'NOT_VERIFIED_WITHIN_WINDOW'])],
+  ['NOT_VERIFIED_WITHIN_WINDOW', new Set<TerminalOutcome>(['VERIFIED_SUCCESS'])],
+  ['VERIFIED_SUCCESS', new Set<TerminalOutcome>()],
+]);
+
+/**
+ * Why a superseding amendment was written (D9, closed vocabulary). Distinct
+ * from the terminal `reason_code`, which keeps describing the OUTCOME; this
+ * describes the CORRECTION.
+ *
+ * Lives here — the shared identity module — for the same reason
+ * `MAX_RETRY_EPOCHS` does (D4): the append gate and the builder must agree on
+ * one list without an import cycle, since route-posterior imports this file
+ * and not the other way round. Re-exported from route-posterior for callers.
+ */
+export const AMEND_REASON_CODES = [
+  'LATE_SIGNAL_IN_WINDOW',
+  'CENSOR_LIFTED_REOPENED',
+  'OPERATOR_CORRECTION',
+] as const;
+export type AmendReasonCode = (typeof AMEND_REASON_CODES)[number];
+
+/**
  * Amendment id for a superseding `outcome.finalized` (D9, formula frozen).
  * `computeFinalId` is the implicit seq 0 and stays byte-identical, so every
  * pre-D9 log keeps resolving. seq ≥ 1 namespaces the correction, which is
@@ -297,37 +345,89 @@ const assertCanonicalUtc = (value: unknown, fieldPath: string): void => {
 };
 
 /**
- * Append-side amendment gate (D9). Field-path-only error text. Fires only when
- * the amendment fields are PRESENT, so every pre-D9 `outcome.finalized` on
- * disk still appends unchanged and the read path is untouched.
+ * Append-side amendment gate (D9). Field-path-only error text.
  *
  * The fold treats a malformed `amend_seq` as the original (seq 0) so it stays
  * total over arbitrary bytes; this gate is the other half — it stops a buggy
  * writer from ever putting such bytes there, where they would silently become
  * an un-supersedable event.
+ *
+ * The gate is TWO-DIRECTIONAL, and the second direction is the one that
+ * matters most. Guarding only "amendment fields present ⇒ shape must be valid"
+ * leaves the mirror hole open: an `outcome.finalized` carrying a
+ * seq-namespaced `event_id` but NO amendment fields would append cleanly and
+ * permanently squat the seq-n id. The genuine amendment then dies on
+ * `DUPLICATE_ID_CONFLICT` and that route can never be corrected again — the
+ * exact loss this whole finding exists to prevent. So an id in the amendment
+ * namespace is itself a trigger, not just the fields.
+ *
+ * Pre-D9 events are unaffected in both directions: they carry no amendment
+ * fields AND their `computeFinalId` is outside the amendment id namespace.
  */
-const assertAmendmentShape = (event: OutcomeEvent): void => {
+const assertAmendmentShape = (
+  event: OutcomeEvent,
+  priorEvents: ReadonlyArray<OutcomeEvent>,
+): void => {
   const seq = event['amend_seq'];
   const amends = event['amends'];
   const amendReason = event['amend_reason_code'];
-  if (seq === undefined && amends === undefined && amendReason === undefined) return;
+  const declaresAmendment = seq !== undefined || amends !== undefined || amendReason !== undefined;
+
+  // Direction 2: does this id sit in the amendment namespace regardless?
+  let claimedSeq: number | null = null;
+  for (let s = 1; s <= MAX_AMEND_SEQ; s += 1) {
+    if (event.event_id === computeFinalAmendId(event.route_id, s)) {
+      claimedSeq = s;
+      break;
+    }
+  }
+  if (!declaresAmendment) {
+    if (claimedSeq === null) return;
+    // An id in the amendment namespace with no amendment fields would burn
+    // that seq slot forever. Name the field that is missing, not the value.
+    throw new OutcomeLogError('INVALID_EVENT', 'amend_seq');
+  }
 
   if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1 || seq > MAX_AMEND_SEQ) {
     throw new OutcomeLogError('INVALID_EVENT', 'amend_seq');
   }
-  if (typeof amends !== 'string' || !SHA256_HEX_RE.test(amends)) {
-    throw new OutcomeLogError('INVALID_EVENT', 'amends');
-  }
-  if (typeof amendReason !== 'string' || amendReason.length === 0) {
+  if (typeof amendReason !== 'string' || !AMEND_REASON_CODES.includes(amendReason as never)) {
+    // The vocabulary is closed on the DURABLE artifact, not only in the
+    // builder: the log outlives the process that wrote it.
     throw new OutcomeLogError('INVALID_EVENT', 'amend_reason_code');
   }
   // The id must be the seq-namespaced one, else the amendment would collide
   // with the original and be rejected as a conflict for the wrong reason.
-  if (event.event_id !== computeFinalAmendId(event.route_id, seq)) {
+  if (claimedSeq !== seq) {
     throw new OutcomeLogError('INVALID_EVENT', 'event_id');
   }
-  if (amends === event.event_id) {
+  // `amends` is fully derivable — seq 1 supersedes the original, seq n the
+  // seq n-1 amendment of the SAME route. A well-formed but wrong pointer
+  // (another route's final) is a caller bug, exactly as with
+  // supersedes_route_id in D4, and it would otherwise be durable forever.
+  const expectedAmends =
+    seq === 1 ? computeFinalId(event.route_id) : computeFinalAmendId(event.route_id, seq - 1);
+  if (typeof amends !== 'string' || amends !== expectedAmends) {
     throw new OutcomeLogError('INVALID_EVENT', 'amends');
+  }
+
+  // Lattice on the DURABLE artifact, not only in the builder. A shape-only
+  // gate would let any writer that skips buildOutcomeFinalizedAmendment land a
+  // forbidden transition — un-verifying a verified review, or re-censoring a
+  // real observation — permanently, in an append-only log. The superseded
+  // event is right here in `priorEvents`, so the real prior outcome is known
+  // and does not have to be taken on the caller's word.
+  const superseded = priorEvents.find((e) => e.event_id === amends);
+  if (superseded === undefined) {
+    // A dangling pointer would make this amendment the effective final for a
+    // route that never had one.
+    throw new OutcomeLogError('INVALID_EVENT', 'amends');
+  }
+  const priorOutcome = superseded['outcome'];
+  const nextOutcome = event['outcome'];
+  const allowed = AMEND_LATTICE.get(priorOutcome as TerminalOutcome);
+  if (allowed === undefined || !allowed.has(nextOutcome as TerminalOutcome)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'outcome');
   }
 };
 
@@ -362,7 +462,6 @@ const assertAppendTimestampRules = (
         throw new OutcomeLogError('INVALID_EVENT', 'verified_at');
       }
     }
-    assertAmendmentShape(event);
   }
 
   if (ROUTE_BOUND_EVENT_TYPES.has(event.event_type)) {
@@ -488,6 +587,12 @@ export const appendOutcomeEvent = (
     // D10 append-side clock gate: after dedupe so a pre-freeze payload that
     // is already on disk can still idempotent-noop without re-validation.
     assertAppendTimestampRules(event, existing.events);
+    // D9 amendment gate — a sibling of the clock gate, not part of it. Same
+    // after-dedupe placement, and deliberately called from here rather than
+    // from inside assertAppendTimestampRules, whose name promises timestamps.
+    if (event.event_type === 'outcome.finalized') {
+      assertAmendmentShape(event, existing.events);
+    }
     const currentBytes = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
     if (currentBytes + lineBytes > maxFile) {
       throw new OutcomeLogError(
