@@ -8,6 +8,7 @@ import {
   OutcomeLogError,
   OUTCOME_LOG_FORMAT,
   type OutcomeEvent,
+  type PRReviewReceiptV1,
 } from './outcome-log.js';
 import { killProcessGroup, shouldUseProcessGroup } from './process-group.js';
 import type { CandidateConfig } from './routing-config.js';
@@ -253,6 +254,7 @@ const emitTerminal = (
   state: DispatchState,
   actualExecutor: string | null,
   attempts: ReadonlyArray<AttemptRecord>,
+  receipt?: PRReviewReceiptV1,
 ): TerminalEmission => {
   if (options.logPath === null) return { emitted: true };
   const event: OutcomeEvent = {
@@ -268,6 +270,7 @@ const emitTerminal = (
       verdict: a.verdict,
       detail: a.detail,
     })),
+    ...(receipt !== undefined ? { receipt } : {}),
   };
   try {
     appendOutcomeEvent(options.logPath, event);
@@ -332,8 +335,36 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
       const attemptOk =
         record['attempt_id'] === undefined ||
         record['attempt_id'] === computeAttemptId(options.routeId, candidate.name);
-      if (isObject && executorOk && routeOk && attemptOk) {
-        const terminalEmission = emitTerminal(options, 'COMPLETED', candidate.name, attempts);
+      // Extract and validate receipt from agent output. undefined = field absent
+      // (clean — receipt not emitted); null = present but invalid (rejected with
+      // receipt-invalid detail); object = valid receipt for authentication.
+      const receiptRaw = record['receipt'];
+      const receipt: PRReviewReceiptV1 | null | undefined = (() => {
+        if (receiptRaw === undefined) return undefined;
+        if (receiptRaw === null || typeof receiptRaw !== 'object' || Array.isArray(receiptRaw)) {
+          return null;
+        }
+        const r = receiptRaw as Record<string, unknown>;
+        if (r['format'] !== 1) return null;
+        const review_id = typeof r['review_id'] === 'string' ? r['review_id'] : '';
+        const actor = typeof r['actor'] === 'string' ? r['actor'] : '';
+        const head_sha = typeof r['head_sha'] === 'string' ? r['head_sha'] : '';
+        const body_sha256 = typeof r['body_sha256'] === 'string' ? r['body_sha256'] : '';
+        if (!review_id || !actor || !head_sha || !body_sha256) return null;
+        return { format: 1, review_id, actor, head_sha, body_sha256 };
+      })();
+      const receiptInvalid = receipt === null;
+      if (isObject && executorOk && routeOk && attemptOk && !receiptInvalid) {
+        // Only pass receipt onward when it's a valid object; undefined (absent)
+        // and null (invalid) both cause emitTerminal to skip the field.
+        const receiptArg: PRReviewReceiptV1 | undefined = receipt === null ? undefined : receipt;
+        const terminalEmission = emitTerminal(
+          options,
+          'COMPLETED',
+          candidate.name,
+          attempts,
+          receiptArg,
+        );
         return {
           state: 'COMPLETED',
           exitCode: DISPATCH_EXIT_CODES.COMPLETED,
@@ -350,9 +381,11 @@ export const dispatchReview = async (options: DispatchOptions): Promise<Dispatch
         verdict: 'effect-unknown',
         detail: !isObject
           ? 'unparseable-output'
-          : executorOk
-            ? 'receipt-mismatch'
-            : 'executor-mismatch',
+          : receiptInvalid
+            ? 'receipt-invalid'
+            : executorOk
+              ? 'receipt-mismatch'
+              : 'executor-mismatch',
       };
     }
 
