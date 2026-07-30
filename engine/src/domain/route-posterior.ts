@@ -75,6 +75,15 @@ export type OrphanReasonCode = (typeof ORPHAN_REASON_CODES)[number];
 export const MAX_ORPHANS_PER_COHORT = 3;
 
 /**
+ * Delivery-related reason codes (D2). Land in the existing free-string
+ * `reason_code` field on `outcome.finalized`. Both are reachable only via
+ * the (unbuilt) outcome-sync finalizer when `classifyDelivery` does not
+ * return DELIVERED and the window expires.
+ */
+export const NO_DELIVERY_EVIDENCE = 'NO_DELIVERY_EVIDENCE' as const;
+export const DELIVERY_UNRESOLVABLE = 'DELIVERY_UNRESOLVABLE' as const;
+
+/**
  * Assignment-time cohort parity rule (single source): odd index ⇒ static,
  * even ⇒ thompson. The engine records and cross-checks; it never derives
  * the arm from the index.

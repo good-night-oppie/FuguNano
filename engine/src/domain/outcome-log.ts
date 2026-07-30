@@ -55,6 +55,46 @@ export const CANONICAL_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  */
 export const GITHUB_SIGNAL_SOURCE_TIMESTAMP_FIELD = 'source_timestamp_at' as const;
 
+/**
+ * Agent-completed review receipt (D2 schema freeze). Optional on the agent's
+ * machine JSON — absent receipt → COMPLETED unchanged (backward compatible;
+ * agents that never emit one stay valid but can never reach DELIVERED).
+ * All-or-nothing: present but malformed, or head_sha contradicting the
+ * dispatch → attempt detail 'receipt-invalid' → EFFECT_UNKNOWN.
+ *
+ * The receipt rides through the existing `sealed()` path so the credential
+ * tripwire covers it.
+ */
+export interface PRReviewReceiptV1 {
+  readonly format: 1;
+  /** GitHub review id (non-empty string at egress). */
+  readonly review_id: string;
+  /** GitHub login of the review author. */
+  readonly actor: string;
+  /** Must equal the dispatched profile's head_sha, else receipt-invalid. */
+  readonly head_sha: string;
+  /** sha256 hex of the exact posted review body bytes (64 lowercase hex). */
+  readonly body_sha256: string;
+}
+
+/**
+ * Frozen field set for `github.signal` events (D2). No builder exists yet —
+ * these declarations pin the contract so a future builder cannot improvise an
+ * alternate shape. The raw body is NEVER stored — only its digest.
+ */
+export interface GitHubSignalShape extends OutcomeEvent {
+  readonly event_type: 'github.signal';
+  readonly source_kind: 'pr-review' | 'review-thread' | 'issue-comment';
+  readonly source_object_id: string;
+  readonly canonical_source_state: string;
+  readonly actor: string;
+  readonly head_sha_at_signal: string;
+  readonly marker_route_id: string | null;
+  readonly marker_attempt_id: string | null;
+  readonly body_sha256: string;
+  readonly source_timestamp_at: string;
+}
+
 /** Frozen caps (spec §B6): single line 64 KiB, whole file 64 MiB. */
 export const MAX_LINE_BYTES = 64 * 1024;
 export const MAX_FILE_BYTES = 64 * 1024 * 1024;
