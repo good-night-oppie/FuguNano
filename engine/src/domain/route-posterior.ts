@@ -1,5 +1,7 @@
 import type { CandidateIdentity } from './candidate-identity.js';
+import { computeDispatchTerminalId } from './dispatch-machine.js';
 import {
+  computeAttemptId,
   computeFinalId,
   computeRouteId,
   computeTaskId,
@@ -51,6 +53,26 @@ export type TerminalOutcome = (typeof TERMINAL_OUTCOMES)[number];
  * "corrected". Named and frozen now; not consumed until the finalizer lands.
  */
 export const ROUTED_AT_SKEW_TOLERANCE_SECONDS = 300;
+
+/**
+ * Sync-time orphan reconstruction reason codes (D17). Land in the existing
+ * free-string `reason_code` field on `outcome.finalized`; both finalize as
+ * `outcome: 'CENSORED'`. No new event type — the writer is dead by definition,
+ * so ORPHANED can never be a dispatch-time terminal state.
+ */
+export const ORPHAN_REASON_CODES = ['ORPHANED_EFFECT', 'ORPHANED_SILENT'] as const;
+export type OrphanReasonCode = (typeof ORPHAN_REASON_CODES)[number];
+
+/**
+ * Cohort tripwire (D17 schema-freeze amendment, operator-ratified 2026-07-28).
+ *
+ * An orphan-burned slot is NOT replaceable: replacement would systematically
+ * evict large-diff PRs (CLI death correlates with task weight) and would mean
+ * a 51st admission while the orphan's possibly-real review stays live, making
+ * "zero duplicate external effects" unauditable. Instead, ≥3 orphan
+ * finalizations invalidate the whole cohort as a machinery failure.
+ */
+export const MAX_ORPHANS_PER_COHORT = 3;
 
 /**
  * Assignment-time cohort parity rule (single source): odd index ⇒ static,
@@ -427,3 +449,99 @@ export const foldPosteriors = (
     diagnostics: { applied, blockedStaticArm, blockedUnattributable, blockedNoSignal },
   };
 };
+
+/**
+ * Sync-time orphan classification (D17). Pure — the sync module itself stays
+ * unbuilt. Never classifies before `deadlineAt`: the orphan child has no
+ * timeout enforcement and may post its review days later; early finalization
+ * forks the truth.
+ *
+ * Determinism (load-bearing): an orphan finalization stamps
+ * `observed_at := deadlineAt` (NOT sync wall-clock), `verified_at := null`,
+ * and `evidence_event_ids` as the route-bound `github.signal` event ids
+ * sorted — so a retried sync hits the duplicate-noop lane.
+ */
+export type OrphanClassification =
+  | { readonly kind: 'pending' }
+  | { readonly kind: 'not_orphan' }
+  | {
+      readonly kind: 'orphan';
+      readonly reasonCode: OrphanReasonCode;
+      readonly actualExecutor: string | null;
+      readonly evidenceEventIds: ReadonlyArray<string>;
+      /** Always equal to `deadlineAt` — never sync wall-clock. */
+      readonly observedAt: string;
+    };
+
+export const classifyOrphan = (
+  routeId: string,
+  events: ReadonlyArray<OutcomeEvent>,
+  deadlineAt: string,
+  nowIso: string,
+): OrphanClassification => {
+  const decided = events.find((e) => e.event_type === 'route.decided' && e.route_id === routeId);
+  if (decided === undefined) return { kind: 'not_orphan' };
+
+  const terminalId = computeDispatchTerminalId(routeId);
+  if (events.some((e) => e.event_id === terminalId)) return { kind: 'not_orphan' };
+
+  const nowMs = Date.parse(nowIso);
+  const deadlineMs = Date.parse(deadlineAt);
+  if (Number.isNaN(nowMs) || Number.isNaN(deadlineMs) || nowMs < deadlineMs) {
+    return { kind: 'pending' };
+  }
+
+  const signals = events.filter((e) => e.event_type === 'github.signal' && e.route_id === routeId);
+  if (signals.length === 0) {
+    return {
+      kind: 'orphan',
+      reasonCode: 'ORPHANED_SILENT',
+      actualExecutor: null,
+      evidenceEventIds: [],
+      observedAt: deadlineAt,
+    };
+  }
+
+  const rankedUnknown: unknown = decided['ranked_candidates'];
+  const ranked: ReadonlyArray<string> = Array.isArray(rankedUnknown)
+    ? (rankedUnknown as ReadonlyArray<string>)
+    : [];
+
+  const matched = new Set<string>();
+  for (const signal of signals) {
+    const attemptId = signal['attempt_id'];
+    if (typeof attemptId !== 'string') continue;
+    for (const candidate of ranked) {
+      if (computeAttemptId(routeId, candidate) === attemptId) matched.add(candidate);
+    }
+  }
+  const actualExecutor = matched.size === 1 ? [...matched][0]! : null;
+  const evidenceEventIds = [...signals.map((s) => s.event_id)].sort();
+
+  return {
+    kind: 'orphan',
+    reasonCode: 'ORPHANED_EFFECT',
+    actualExecutor,
+    evidenceEventIds,
+    observedAt: deadlineAt,
+  };
+};
+
+/**
+ * Count `outcome.finalized` rows whose `reason_code` is an orphan code.
+ * Non-orphan CENSORED rows (HEAD_DRIFT, operator_abandoned, …) do not count.
+ * One log = one cohort; the tripwire is cohort-scoped.
+ */
+export const countOrphanFinalizations = (events: ReadonlyArray<OutcomeEvent>): number => {
+  let n = 0;
+  for (const event of events) {
+    if (event.event_type !== 'outcome.finalized') continue;
+    const code = event['reason_code'];
+    if (code === 'ORPHANED_EFFECT' || code === 'ORPHANED_SILENT') n += 1;
+  }
+  return n;
+};
+
+/** `true` when orphan finalizations in the log reach `MAX_ORPHANS_PER_COHORT`. */
+export const isCohortInvalidatedByOrphans = (events: ReadonlyArray<OutcomeEvent>): boolean =>
+  countOrphanFinalizations(events) >= MAX_ORPHANS_PER_COHORT;
