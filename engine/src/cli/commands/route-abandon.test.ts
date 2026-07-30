@@ -186,4 +186,16 @@ describe('fugue route abandon', () => {
     expect(machine['status']).toBe('invalid_input');
     expect(machine['reason']).toMatch(/task-id must be repo#pr@head_sha/);
   });
+
+  it('refuses a pr past MAX_SAFE_INTEGER — Number() would silently rename the task', async () => {
+    const { code, machine } = await runAbandon([
+      'route',
+      'abandon',
+      '--task-id',
+      `acme/widgets#99999999999999999999@${'e'.repeat(40)}`,
+    ]);
+    expect(code).toBe(2);
+    expect(machine['status']).toBe('invalid_input');
+    expect(machine['reason']).toMatch(/safe integer/);
+  });
 });

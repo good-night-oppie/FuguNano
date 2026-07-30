@@ -233,6 +233,18 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
     );
   }
   const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
+  // The prior-epoch route id is fully derivable, so an arbitrary 64-hex
+  // value is a caller bug: epoch n supersedes exactly epoch n-1 of the SAME
+  // task, never anything else.
+  if (
+    input.supersedesRouteId !== null &&
+    input.supersedesRouteId !== computeRouteId(taskId, input.retryEpoch - 1)
+  ) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      'supersedesRouteId must be the prior epoch route id of the same task',
+    );
+  }
   const routeId = computeRouteId(taskId, input.retryEpoch);
   return {
     format: OUTCOME_LOG_FORMAT,

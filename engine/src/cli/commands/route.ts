@@ -20,7 +20,12 @@ const parseTaskIdFlag = (
 ): { readonly repo: string; readonly pr: number; readonly headSha: string } | string => {
   const match = TASK_ID_RE.exec(raw.trim());
   if (match === null) return 'task-id must be repo#pr@head_sha';
-  return { repo: match[1]!, pr: Number(match[2]!), headSha: match[3]! };
+  const pr = Number(match[2]!);
+  // Same cap as parseTaskProfile: past MAX_SAFE_INTEGER, Number() reformats
+  // the digit string, so the computed task_id would silently name a
+  // DIFFERENT task than the operator typed.
+  if (pr > Number.MAX_SAFE_INTEGER) return 'task-id pr must be a safe integer';
+  return { repo: match[1]!, pr, headSha: match[3]! };
 };
 
 const readStream = async (stream: AsyncIterable<Buffer | string>): Promise<string> => {

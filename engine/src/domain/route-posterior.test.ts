@@ -123,6 +123,18 @@ describe('event builders', () => {
     ).toThrow(/retryEpoch/);
   });
 
+  it('supersedes_route_id must be the derivable prior-epoch id, not any 64-hex', () => {
+    const epoch0 = buildRouteDecided(routeInput(31));
+    // A well-formed but WRONG id (another task's epoch 0) is a caller bug.
+    expect(() =>
+      buildRouteDecided(routeInput(31, { retryEpoch: 1, supersedesRouteId: 'a'.repeat(64) })),
+    ).toThrow(/prior epoch route id/);
+    // Epoch 2 must supersede epoch 1, not epoch 0.
+    expect(() =>
+      buildRouteDecided(routeInput(31, { retryEpoch: 2, supersedesRouteId: epoch0.route_id })),
+    ).toThrow(/prior epoch route id/);
+  });
+
   it('outcome.finalized derives the frozen final id from the route', () => {
     const [route, final] = pair(2);
     expect(final!.route_id).toBe(route!.route_id);

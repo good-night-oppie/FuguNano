@@ -9,7 +9,9 @@ import {
   computeAttemptId,
   computeRouteId,
   readOutcomeLog,
+  OUTCOME_LOG_FORMAT,
 } from './outcome-log.js';
+import { computeDispatchTerminalId } from './dispatch-machine.js';
 import { buildOutcomeFinalized, buildRouteDecided } from './route-posterior.js';
 import {
   abandonReviewRoute,
@@ -800,5 +802,127 @@ describe('retry epoch + duplicate_route (D4)', () => {
     expect(result.machine['status']).toBe('duplicate_route');
     expect(result.machine['reason']).toMatch(/outcome\.finalized already exists/);
     expect(fs.readFileSync(logPath, 'utf8')).toBe(before);
+  });
+
+  const appendTerminal = (routeId: string, state: 'COMPLETED' | 'EFFECT_UNKNOWN'): void => {
+    appendOutcomeEvent(logPath, {
+      format: OUTCOME_LOG_FORMAT,
+      event_type: 'dispatch.terminal',
+      event_id: computeDispatchTerminalId(routeId),
+      route_id: routeId,
+      observed_at: '2026-07-23T12:01:00.000Z',
+      terminal_state: state,
+      actual_executor: state === 'COMPLETED' ? 'codex' : null,
+      attempts: [],
+    });
+  };
+
+  const appendAbandonFinalized = (routeId: string, retryEpoch = 0): void => {
+    appendOutcomeEvent(
+      logPath,
+      buildOutcomeFinalized({
+        repo: PROFILE.repo,
+        prNumber: PROFILE.pr,
+        headSha: PROFILE.head_sha,
+        outcome: 'CENSORED',
+        reasonCode: 'operator_abandoned',
+        actualExecutor: null,
+        evidenceEventIds: [routeId],
+        verifiedAt: null,
+        observedAt: '2026-07-23T12:00:30.000Z',
+        retryEpoch,
+      }),
+    );
+  };
+
+  it('abandon race: operator_abandoned + COMPLETED terminal → duplicate_route, agent NOT re-run', async () => {
+    // The race the spec's "both unlock lanes exclude any terminal that is not
+    // DISPATCH_FAILED" invariant exists for: abandon lands in the crash
+    // window, then the in-flight dispatch completes. The abandoned lane must
+    // NOT unlock epoch 1 past a COMPLETED terminal — a duplicate review on a
+    // real PR is worse than a missing one.
+    const marker = path.join(dir, 'raced-second-run');
+    seedRouteDecidedOnly();
+    appendAbandonFinalized(ROUTE_ID);
+    appendTerminal(ROUTE_ID, 'COMPLETED');
+    writeConfig([
+      {
+        name: 'codex',
+        argv: [fixture('raced.sh', `cat > /dev/null; echo run >> ${marker}; echo "{}"`)],
+      },
+    ]);
+    const again = await run(PROFILE, 'static', deps({ seed: 'b'.repeat(32) }));
+    expect(again.exitCode).toBe(74);
+    expect(again.machine).toMatchObject({
+      status: 'duplicate_route',
+      retry_epoch: 0,
+      prior_terminal_state: 'COMPLETED',
+      retryable: false,
+    });
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(readOutcomeLog(logPath).events).toHaveLength(3);
+  });
+
+  it('abandon race: operator_abandoned + EFFECT_UNKNOWN terminal stays structurally non-retryable', async () => {
+    seedRouteDecidedOnly();
+    appendAbandonFinalized(ROUTE_ID);
+    appendTerminal(ROUTE_ID, 'EFFECT_UNKNOWN');
+    const again = await run(PROFILE, 'static', deps({ seed: 'b'.repeat(32) }));
+    expect(again.exitCode).toBe(74);
+    expect(again.machine).toMatchObject({
+      status: 'duplicate_route',
+      prior_terminal_state: 'EFFECT_UNKNOWN',
+      retryable: false,
+    });
+  });
+
+  it('retry epoch inherits admission: different cohort_index or arm → invalid_input, zero side effects', async () => {
+    // R2 froze membership byte-frozen at admission; the epoch-0 route.decided
+    // IS the admission record, so every retry epoch must re-state it exactly.
+    const marker = path.join(dir, 'continuity-spawn');
+    writeConfig([{ name: 'codex', argv: [missingBin()] }]);
+    const first = await run(PROFILE, 'thompson', deps(), '4');
+    expect(first.exitCode).toBe(7);
+    const eventsAfterFail = readOutcomeLog(logPath).events.length;
+    writeConfig([
+      {
+        name: 'codex',
+        argv: [fixture('cont.sh', `cat > /dev/null; touch ${marker}; echo "{}"`)],
+      },
+    ]);
+    // Wrong cohort index (6 ≠ 4), right arm.
+    const wrongIndex = await run(PROFILE, 'thompson', deps({ seed: 'c'.repeat(32) }), '6');
+    expect(wrongIndex.exitCode).toBe(2);
+    expect(wrongIndex.machine['status']).toBe('invalid_input');
+    expect(wrongIndex.machine['reason']).toMatch(/cohort_index|policy_arm/);
+    // Wrong arm (parity-valid for its index), cohort dropped to null.
+    const wrongArm = await run(PROFILE, 'static', deps({ seed: 'c'.repeat(32) }));
+    expect(wrongArm.exitCode).toBe(2);
+    expect(wrongArm.machine['status']).toBe('invalid_input');
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(readOutcomeLog(logPath).events).toHaveLength(eventsAfterFail);
+    // Matching admission proceeds to epoch 1.
+    const retry = await run(PROFILE, 'thompson', deps({ seed: 'c'.repeat(32) }), '4');
+    expect(retry.exitCode).toBe(0);
+    expect(retry.machine['route_id']).toBe(computeRouteId(TASK_ID, 1));
+    expect(retry.machine['cohort_index']).toBe(4);
+  });
+
+  it('abandon at retry epoch 1 seals epoch 1, not epoch 0', async () => {
+    writeConfig([{ name: 'codex', argv: [missingBin()] }]);
+    const first = await run();
+    expect(first.machine['status']).toBe('dispatch_failed');
+    // Crash window at epoch 1: decided-only.
+    seedRouteDecidedOnly(1, ROUTE_ID);
+    const abandoned = abandonReviewRoute(
+      { repo: PROFILE.repo, pr: PROFILE.pr, headSha: PROFILE.head_sha },
+      deps(),
+    );
+    expect(abandoned.exitCode).toBe(0);
+    expect(abandoned.machine['retry_epoch']).toBe(1);
+    const finalized = readOutcomeLog(logPath).events.find(
+      (e) => e.event_type === 'outcome.finalized',
+    )!;
+    expect(finalized.route_id).toBe(computeRouteId(TASK_ID, 1));
   });
 });

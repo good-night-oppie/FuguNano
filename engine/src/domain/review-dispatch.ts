@@ -179,11 +179,15 @@ const readPriorTerminalState = (
 };
 
 const isEpochRetryable = (events: ReadonlyArray<OutcomeEvent>, routeId: string): boolean => {
-  for (const event of events) {
-    if (event.event_type === 'dispatch.terminal' && event.route_id === routeId) {
-      if (event['terminal_state'] === 'DISPATCH_FAILED') return true;
-    }
-  }
+  // Frozen invariant (§D4): BOTH unlock lanes exclude any terminal that is
+  // not DISPATCH_FAILED. A COMPLETED/EFFECT_UNKNOWN terminal is structurally
+  // final even when an operator_abandoned finalized ALSO exists for the same
+  // route — the abandon/completion race must never open a new epoch after
+  // the candidate provably (or possibly) ran. A duplicate review on a real
+  // PR is worse than a missing one.
+  const terminal = readPriorTerminalState(events, routeId);
+  if (terminal === 'COMPLETED' || terminal === 'EFFECT_UNKNOWN') return false;
+  if (terminal === 'DISPATCH_FAILED') return true;
   for (const event of events) {
     if (event.event_type !== 'outcome.finalized' || event.route_id !== routeId) continue;
     if (event['outcome'] === 'CENSORED' && event['reason_code'] === 'operator_abandoned') {
@@ -428,6 +432,31 @@ export const runReviewDispatch = async (
       return duplicateRouteOutcome(taskId, retryDecision);
     }
     const { routeId, retryEpoch, supersedesRouteId } = retryDecision;
+
+    // R2 continuity across epochs: admission (cohort_index + policy_arm) is
+    // byte-frozen at epoch 0's route.decided. A retry epoch re-states the
+    // SAME admission — a different index, a null index, or the other arm
+    // would let one task train both arms and corrupt the 25/25 audit. Fails
+    // closed BEFORE any candidate spawn or log write.
+    if (supersedesRouteId !== null) {
+      const superseded = events.find(
+        (e) => e.event_type === 'route.decided' && e.route_id === supersedesRouteId,
+      );
+      if (superseded !== undefined) {
+        if (superseded['cohort_index'] !== cohortIndex) {
+          throw new OutcomeLogError(
+            'INVALID_EVENT',
+            'cohort_index must match the superseded route.decided',
+          );
+        }
+        if (superseded['policy_arm'] !== policyArm) {
+          throw new OutcomeLogError(
+            'INVALID_EVENT',
+            'policy_arm must match the superseded route.decided',
+          );
+        }
+      }
+    }
 
     const eligible = eligibleReviewers(loaded.config.candidates, {
       authorLineage: profile.authorLineage,
