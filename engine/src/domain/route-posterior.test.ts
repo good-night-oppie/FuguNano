@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CandidateIdentity } from './candidate-identity.js';
-import type { OutcomeEvent } from './outcome-log.js';
+import { EVENT_TYPES, type OutcomeEvent } from './outcome-log.js';
 import {
   armForCohortIndex,
   buildOutcomeFinalized,
   buildOutcomeFinalizedAmendment,
   buildRouteDecided,
+  AMEND_REASON_CODES,
   countOrphanFinalizations,
   effectiveFinalForRoute,
   FINALIZE_GRACE_HOURS,
@@ -768,10 +769,26 @@ describe('D9 — superseding amendments to outcome.finalized', () => {
   it("(i) two differently-id'd finals for one route resolve to exactly ONE update", () => {
     // A state the current finalizer cannot produce — the resolution rule is
     // frozen now precisely so a future writer cannot double-count into it.
+    //
+    // The twin deliberately carries a DIFFERENT outcome. Giving it the same
+    // outcome (the obvious way to write this test) makes it tautological with
+    // respect to the tie-break: whichever event won, the posterior would look
+    // identical, so deleting the `event_id` tie-break and falling back to
+    // array order would still pass. With opposing outcomes the winner is
+    // observable, and the reversed-order assertion fails without the rule.
     const [route, final] = pair(76, {}, { actualExecutor: 'claude' });
-    const twin: OutcomeEvent = { ...final!, event_id: 'd'.repeat(64) };
+    const twin: OutcomeEvent = {
+      ...final!,
+      event_id: 'd'.repeat(64),
+      outcome: 'NOT_VERIFIED_WITHIN_WINDOW',
+      verified_at: null,
+    };
+    // Lowest event_id wins, and the real final's sha256 sorts below 'ddd...'.
+    expect(final!.event_id < twin.event_id).toBe(true);
+
     const forward = foldPosteriors([route!, final!, twin], [...CANDIDATES]);
     const reversed = foldPosteriors([route!, twin, final!], [...CANDIDATES]);
+    // VERIFIED_SUCCESS won => alpha+1, NOT beta+1.
     expect(forward.posteriors).toContainEqual({ candidateId: 'claude', alpha: 2, beta: 1 });
     expect(forward.diagnostics.applied).toBe(1);
     expect(forward.diagnostics.superseded).toBe(1);
@@ -859,6 +876,59 @@ describe('D9 — superseding amendments to outcome.finalized', () => {
       amendment.event_id,
     );
     expect(effectiveFinalForRoute(stream, 'f'.repeat(64))).toBeUndefined();
+  });
+
+  it('the amendment vocabularies are frozen and actually persisted', () => {
+    // Brief §1: the four-type event vocabulary must not grow. Brief §2: the
+    // correction reason is a CLOSED vocabulary. Neither had a freeze test, so
+    // a fifth event type or a fourth reason code would have shipped silently.
+    expect([...EVENT_TYPES]).toStrictEqual([
+      'route.decided',
+      'dispatch.terminal',
+      'github.signal',
+      'outcome.finalized',
+    ]);
+    expect([...AMEND_REASON_CODES]).toStrictEqual([
+      'LATE_SIGNAL_IN_WINDOW',
+      'CENSOR_LIFTED_REOPENED',
+      'OPERATOR_CORRECTION',
+    ]);
+    // …and the code the caller passes is the code that lands on the event.
+    for (const code of AMEND_REASON_CODES) {
+      const { amendment } = amended(
+        90,
+        { outcome: 'CENSORED', reasonCode: 'HEAD_DRIFT', verifiedAt: null },
+        { amendReasonCode: code },
+      );
+      expect(amendment['amend_reason_code']).toBe(code);
+      expect(amendment['event_type']).toBe('outcome.finalized');
+    }
+  });
+
+  it('rejects a non-canonical evidence timestamp, not just a non-canonical deadline', () => {
+    // Test (e) only exercised the deadlineAt half of the canonical guard.
+    const original = buildOutcomeFinalized(finalInput(91, { outcome: 'CENSORED' }));
+    const withEvidence = (evidenceCanonicalTimestamp: string): OutcomeFinalizedAmendmentInput => ({
+      ...finalInput(91),
+      outcome: 'VERIFIED_SUCCESS',
+      reasonCode: 'LATE_APPROVAL',
+      verifiedAt: IN_WINDOW,
+      observedAt: IN_WINDOW,
+      amendSeq: 1,
+      amends: original.event_id,
+      priorOutcome: 'CENSORED',
+      amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+      deadlineAt: DEADLINE,
+      evidenceCanonicalTimestamp,
+    });
+    expect(() => buildOutcomeFinalizedAmendment(withEvidence('2026-07-29T09:00:00Z'))).toThrow(
+      /evidenceCanonicalTimestamp/,
+    );
+    // An impossible calendar date matches the regex, parses to NaN, and sorts
+    // BEFORE every real deadline — so a regex-only guard reads it as in-window.
+    expect(() => buildOutcomeFinalizedAmendment(withEvidence('2026-13-45T99:99:99.999Z'))).toThrow(
+      /evidenceCanonicalTimestamp/,
+    );
   });
 
   it('FINALIZE_GRACE_HOURS is frozen at 24', () => {
