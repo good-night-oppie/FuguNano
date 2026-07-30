@@ -12,7 +12,11 @@ import {
   OUTCOME_LOG_FORMAT,
 } from './outcome-log.js';
 import { computeDispatchTerminalId } from './dispatch-machine.js';
-import { buildOutcomeFinalized, buildRouteDecided } from './route-posterior.js';
+import {
+  buildOutcomeFinalized,
+  buildOutcomeFinalizedAmendment,
+  buildRouteDecided,
+} from './route-posterior.js';
 import {
   abandonReviewRoute,
   MAX_RETRY_EPOCHS,
@@ -747,6 +751,62 @@ describe('retry epoch + duplicate_route (D4)', () => {
     expect(retry.exitCode).toBe(0);
     expect(retry.machine['route_id']).toBe(computeRouteId(TASK_ID, 1));
     expect(fs.readFileSync(marker, 'utf8')).toBe('run\n');
+  });
+
+  it('D9: an amendment that LIFTS an abandon re-locks the epoch (no duplicate review)', async () => {
+    // Adversarial-review finding, high. isEpochRetryable scanned finalized
+    // ROWS for operator_abandoned. Once D9 allowed CENSORED -> VERIFIED_SUCCESS,
+    // the superseded abandon row still matched, so a route whose review had in
+    // fact landed would open a fresh epoch and dispatch a SECOND review onto a
+    // live PR. D4's own comment calls that worse than a missing review.
+    seedRouteDecidedOnly();
+    const abandoned = abandonReviewRoute(
+      { repo: PROFILE.repo, pr: PROFILE.pr, headSha: PROFILE.head_sha },
+      deps(),
+    );
+    expect(abandoned.exitCode).toBe(0);
+
+    const original = readOutcomeLog(logPath).events.find(
+      (e) => e.event_type === 'outcome.finalized' && e.route_id === ROUTE_ID,
+    );
+    expect(original).toBeDefined();
+
+    // The abandon turns out to have been wrong: the review did land, in window.
+    const lift = buildOutcomeFinalizedAmendment({
+      repo: PROFILE.repo,
+      prNumber: PROFILE.pr,
+      headSha: PROFILE.head_sha,
+      outcome: 'VERIFIED_SUCCESS',
+      reasonCode: 'LATE_APPROVAL',
+      actualExecutor: 'codex',
+      evidenceEventIds: [],
+      verifiedAt: '2026-07-29T09:00:00.000Z',
+      observedAt: '2026-07-29T09:00:00.000Z',
+      amendSeq: 1,
+      amends: original!.event_id,
+      priorOutcome: 'CENSORED',
+      amendReasonCode: 'OPERATOR_CORRECTION',
+      deadlineAt: '2026-07-30T12:00:00.000Z',
+      evidenceCanonicalTimestamp: '2026-07-29T09:00:00.000Z',
+    });
+    expect(appendOutcomeEvent(logPath, lift)).toBe('appended');
+
+    const marker = path.join(dir, 'must-not-run');
+    writeConfig([
+      {
+        name: 'codex',
+        argv: [
+          fixture(
+            'must-not-run.sh',
+            `cat > /dev/null; echo run >> ${marker}; echo "{\\"format\\":1,\\"executed_agent\\":\\"codex\\",\\"result_ref\\":\\"r\\"}"`,
+          ),
+        ],
+      },
+    ]);
+    const retry = await run(PROFILE, 'static', deps({ seed: 'f'.repeat(32) }));
+    expect(retry.exitCode).toBe(74);
+    expect(retry.machine['status']).toBe('duplicate_route');
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   it('epoch cap: epochs 0..3 DISPATCH_FAILED → next attempt is duplicate_route, no epoch 4', async () => {
