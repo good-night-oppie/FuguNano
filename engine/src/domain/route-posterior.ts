@@ -3,6 +3,7 @@ import {
   computeFinalId,
   computeRouteId,
   computeTaskId,
+  MAX_RETRY_EPOCHS,
   OutcomeLogError,
   OUTCOME_LOG_FORMAT,
   type OutcomeEvent,
@@ -213,8 +214,15 @@ export const buildRouteDecided = (input: RouteDecidedInput): OutcomeEvent => {
       );
     }
   }
-  if (!Number.isInteger(input.retryEpoch) || input.retryEpoch < 0 || input.retryEpoch > 3) {
-    throw new OutcomeLogError('INVALID_EVENT', 'retryEpoch must be an integer in 0..3');
+  if (
+    !Number.isInteger(input.retryEpoch) ||
+    input.retryEpoch < 0 ||
+    input.retryEpoch > MAX_RETRY_EPOCHS
+  ) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      `retryEpoch must be an integer in 0..${String(MAX_RETRY_EPOCHS)}`,
+    );
   }
   if (input.retryEpoch === 0) {
     if (input.supersedesRouteId !== null) {
@@ -301,8 +309,11 @@ export const buildOutcomeFinalized = (input: OutcomeFinalizedInput): OutcomeEven
   }
   assertNonEmpty(input.reasonCode, 'reasonCode');
   const retryEpoch = input.retryEpoch ?? 0;
-  if (!Number.isInteger(retryEpoch) || retryEpoch < 0 || retryEpoch > 3) {
-    throw new OutcomeLogError('INVALID_EVENT', 'retryEpoch must be an integer in 0..3');
+  if (!Number.isInteger(retryEpoch) || retryEpoch < 0 || retryEpoch > MAX_RETRY_EPOCHS) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      `retryEpoch must be an integer in 0..${String(MAX_RETRY_EPOCHS)}`,
+    );
   }
   const taskId = computeTaskId(input.repo, input.prNumber, input.headSha);
   const routeId = computeRouteId(taskId, retryEpoch);

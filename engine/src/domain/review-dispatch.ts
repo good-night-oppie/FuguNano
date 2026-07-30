@@ -13,6 +13,7 @@ import {
   computeAttemptId,
   computeRouteId,
   computeTaskId,
+  MAX_RETRY_EPOCHS,
   OutcomeLogError,
   readOutcomeLog,
   resolveOutcomeLogPath,
@@ -59,8 +60,12 @@ export const OUTCOME_WINDOW_HOURS = 168;
 
 export const MACHINE_FORMAT = 1;
 
-/** Inclusive ceiling on retry_epoch (0..MAX). Epoch 4 is never created. */
-export const MAX_RETRY_EPOCHS = 3;
+/**
+ * Inclusive ceiling on retry_epoch (0..MAX). Epoch 4 is never created.
+ * Canonical value lives in outcome-log.ts (shared identity module);
+ * re-exported here for the existing public surface.
+ */
+export { MAX_RETRY_EPOCHS } from './outcome-log.js';
 
 export type MachineStatus =
   | 'completed'
@@ -230,17 +235,7 @@ export const resolveRetryDispatch = (
   events: ReadonlyArray<OutcomeEvent>,
   taskId: string,
 ): RetryDispatchDecision => {
-  let highest: number | null = null;
-  for (let epoch = 0; epoch <= MAX_RETRY_EPOCHS; epoch += 1) {
-    const candidateRouteId = computeRouteId(taskId, epoch);
-    if (
-      events.some(
-        (event) => event.event_type === 'route.decided' && event.route_id === candidateRouteId,
-      )
-    ) {
-      highest = epoch;
-    }
-  }
+  const highest = findHighestRouteEpoch(events, taskId);
   if (highest === null) {
     return {
       kind: 'dispatch',

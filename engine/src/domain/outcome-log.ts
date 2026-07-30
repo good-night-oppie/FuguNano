@@ -86,6 +86,14 @@ export const computeTaskId = (repo: string, prNumber: number, headSha: string): 
   `${repo}#${prNumber}@${headSha}`;
 
 /**
+ * Retry-epoch ceiling (D4, frozen). Lives here — the shared identity module
+ * — so the retry gate (review-dispatch), both event builders
+ * (route-posterior), and route-id derivation agree on one value without an
+ * import cycle (review-dispatch imports route-posterior imports this file).
+ */
+export const MAX_RETRY_EPOCHS = 3;
+
+/**
  * Route identity. Epoch 0 is byte-identical to the pre-retry formula so
  * existing logs keep resolving; epoch n≥1 namespaces a fresh route after a
  * provably-never-started failure or an operator abandon.
