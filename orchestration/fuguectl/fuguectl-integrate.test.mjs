@@ -20,6 +20,20 @@ const gitText = (args) => git(args).stdout.trim();
 const mkwt = (agent) =>
   git(["worktree", "add", "-q", "-b", `br-${agent}`, workspace(agent), "main"]);
 
+// Hostile-host-env fixture: a git hook (pre-push runs `make ci`, which runs
+// this selftest) exports GIT_DIR pointing at the HOST repo's gitdir. If that
+// leaks into the scratch repo's children, `git init` below re-targets the
+// host repo and every commit in this suite lands on the host's branches
+// (2026-07-30 incident: 12 bogus commits on main, core.bare flipped, a
+// feature branch ref deleted). The decoy stands in for the host repo; the
+// suite must leave it byte-identical.
+const decoy = join(tmp, "decoy-host");
+mkdirSync(decoy, { recursive: true });
+runGit(["-C", decoy, "init", "-q"]);
+runGit(["-C", decoy, "commit", "-q", "--allow-empty", "-m", "host-initial"]);
+const decoyHead = runGit(["-C", decoy, "rev-parse", "HEAD"]).stdout.trim();
+process.env.GIT_DIR = join(decoy, ".git");
+
 mkdirSync(work, { recursive: true });
 git(["init", "-q"]);
 writeFileSync(join(work, "shared.txt"), "base\n");
@@ -353,6 +367,28 @@ suite.ok(
       blockedTask,
       "--dry",
     ]).stdout.includes("── integrate"),
+);
+
+// Escape containment: everything above ran with GIT_DIR aimed at the decoy
+// host repo. If any scratch git operation honored it, the decoy now carries
+// this suite's commits/branches/config instead of the scratch repo.
+suite.ok(
+  "hostile GIT_DIR: decoy host repo HEAD untouched by the whole suite",
+  () => runGit(["-C", decoy, "rev-parse", "HEAD"]).stdout.trim() === decoyHead,
+);
+suite.ok(
+  "hostile GIT_DIR: decoy host repo grew no branches and stayed non-bare",
+  () =>
+    runGit(["-C", decoy, "branch", "--list"]).stdout.trim().split("\n")
+      .length === 1 &&
+    runGit(["-C", decoy, "config", "core.bare"]).stdout.trim() === "false",
+);
+suite.ok(
+  "hostile GIT_DIR: scratch repo owns its own gitdir (commits landed there)",
+  () =>
+    git(["rev-parse", "--absolute-git-dir"]).stdout.trim() ===
+      join(work, ".git") &&
+    gitText(["log", "--oneline", "main"]).length > 0,
 );
 
 suite.done();

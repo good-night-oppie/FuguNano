@@ -13,6 +13,9 @@ export default tseslint.config(
       'coverage/**',
       '*.config.ts',
       '*.config.js',
+      // Same class as *.config.ts: tooling glue outside tsconfig's `src`
+      // include, so the type-aware project service cannot parse it.
+      'vitest.setup.ts',
       'eslint.config.js',
     ],
   },
