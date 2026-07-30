@@ -70,6 +70,15 @@ describe('canonical ids — frozen formulas', () => {
     expect(computeRouteId('a')).not.toBe(computeRouteId('b'));
     expect(computeAttemptId(routeId, 'claude')).not.toBe(computeAttemptId(routeId, 'codex'));
   });
+
+  it('retry epoch namespaces route id; epoch 0 stays byte-identical to the legacy call', () => {
+    const taskId = computeTaskId('acme/widgets', 42, 'deadbeef');
+    const h = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
+    expect(computeRouteId(taskId, 0)).toBe(computeRouteId(taskId));
+    expect(computeRouteId(taskId, 0)).toBe(h(`pr-review-v1\0${taskId}`));
+    expect(computeRouteId(taskId, 1)).toBe(h(`pr-review-v1\0${taskId}\0retry\0${1}`));
+    expect(computeRouteId(taskId, 1)).not.toBe(computeRouteId(taskId, 0));
+  });
 });
 
 describe('path resolution', () => {
