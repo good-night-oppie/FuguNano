@@ -179,6 +179,26 @@ export const computeSignalId = (
 export const computeFinalId = (routeId: string): string =>
   sha256(`pr-review-outcome-v1\0${routeId}`);
 
+/**
+ * Superseding-amendment ceiling (D9, frozen for v1). One amendment per route:
+ * a late verified signal is a single correction, not an editable field.
+ */
+export const MAX_AMEND_SEQ = 1;
+
+/**
+ * Amendment id for a superseding `outcome.finalized` (D9, formula frozen).
+ * `computeFinalId` is the implicit seq 0 and stays byte-identical, so every
+ * pre-D9 log keeps resolving. seq ≥ 1 namespaces the correction, which is
+ * what makes an amendment a NEW append rather than an impossible rewrite of
+ * the frozen original (`appendOutcomeEvent` rejects same-id/different-payload).
+ */
+export const computeFinalAmendId = (routeId: string, seq: number): string => {
+  if (!Number.isInteger(seq) || seq < 1) {
+    throw new OutcomeLogError('INVALID_EVENT', 'amend_seq must be an integer >= 1');
+  }
+  return sha256(`pr-review-outcome-v1\0${routeId}\0amend\0${String(seq)}`);
+};
+
 // --- path resolution -------------------------------------------------------
 
 export const resolveOutcomeLogPath = (env: Record<string, string | undefined>): string => {
@@ -276,6 +296,41 @@ const assertCanonicalUtc = (value: unknown, fieldPath: string): void => {
   }
 };
 
+/**
+ * Append-side amendment gate (D9). Field-path-only error text. Fires only when
+ * the amendment fields are PRESENT, so every pre-D9 `outcome.finalized` on
+ * disk still appends unchanged and the read path is untouched.
+ *
+ * The fold treats a malformed `amend_seq` as the original (seq 0) so it stays
+ * total over arbitrary bytes; this gate is the other half — it stops a buggy
+ * writer from ever putting such bytes there, where they would silently become
+ * an un-supersedable event.
+ */
+const assertAmendmentShape = (event: OutcomeEvent): void => {
+  const seq = event['amend_seq'];
+  const amends = event['amends'];
+  const amendReason = event['amend_reason_code'];
+  if (seq === undefined && amends === undefined && amendReason === undefined) return;
+
+  if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 1 || seq > MAX_AMEND_SEQ) {
+    throw new OutcomeLogError('INVALID_EVENT', 'amend_seq');
+  }
+  if (typeof amends !== 'string' || !SHA256_HEX_RE.test(amends)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'amends');
+  }
+  if (typeof amendReason !== 'string' || amendReason.length === 0) {
+    throw new OutcomeLogError('INVALID_EVENT', 'amend_reason_code');
+  }
+  // The id must be the seq-namespaced one, else the amendment would collide
+  // with the original and be rejected as a conflict for the wrong reason.
+  if (event.event_id !== computeFinalAmendId(event.route_id, seq)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'event_id');
+  }
+  if (amends === event.event_id) {
+    throw new OutcomeLogError('INVALID_EVENT', 'amends');
+  }
+};
+
 const assertAppendTimestampRules = (
   event: OutcomeEvent,
   priorEvents: ReadonlyArray<OutcomeEvent>,
@@ -307,6 +362,7 @@ const assertAppendTimestampRules = (
         throw new OutcomeLogError('INVALID_EVENT', 'verified_at');
       }
     }
+    assertAmendmentShape(event);
   }
 
   if (ROUTE_BOUND_EVENT_TYPES.has(event.event_type)) {

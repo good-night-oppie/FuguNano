@@ -5,8 +5,12 @@ import type { OutcomeEvent } from './outcome-log.js';
 import {
   armForCohortIndex,
   buildOutcomeFinalized,
+  buildOutcomeFinalizedAmendment,
   buildRouteDecided,
+  FINALIZE_GRACE_HOURS,
   foldPosteriors,
+  type AmendReasonCode,
+  type OutcomeFinalizedAmendmentInput,
   type OutcomeFinalizedInput,
   type RouteDecidedInput,
 } from './route-posterior.js';
@@ -522,5 +526,291 @@ describe('candidate_identities (schema-freeze v1)', () => {
         argv0_digest_error: 'ENOENT',
       },
     ]);
+  });
+});
+
+describe('D9 — superseding amendments to outcome.finalized', () => {
+  const DEADLINE = '2026-07-30T12:00:00.000Z';
+  const IN_WINDOW = '2026-07-29T09:00:00.000Z';
+
+  /**
+   * Original + its seq-1 amendment for one PR. `priorOutcome` and the derived
+   * `amends` pointer are wired from the original so a test can only diverge
+   * from a real pair on purpose.
+   */
+  const amended = (
+    pr: number,
+    originalOverrides: Partial<OutcomeFinalizedInput>,
+    amendOverrides: Partial<OutcomeFinalizedAmendmentInput> = {},
+    routeOverrides: Partial<RouteDecidedInput> = {},
+  ): { route: OutcomeEvent; original: OutcomeEvent; amendment: OutcomeEvent } => {
+    const route = buildRouteDecided(routeInput(pr, { deadlineAt: DEADLINE, ...routeOverrides }));
+    const original = buildOutcomeFinalized(finalInput(pr, originalOverrides));
+    const amendment = buildOutcomeFinalizedAmendment({
+      ...finalInput(pr, originalOverrides),
+      outcome: 'VERIFIED_SUCCESS',
+      reasonCode: 'LATE_APPROVAL',
+      verifiedAt: IN_WINDOW,
+      observedAt: IN_WINDOW,
+      amendSeq: 1,
+      amends: original.event_id,
+      priorOutcome: originalOverrides.outcome ?? 'VERIFIED_SUCCESS',
+      amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+      deadlineAt: DEADLINE,
+      evidenceCanonicalTimestamp: IN_WINDOW,
+      ...amendOverrides,
+    });
+    return { route, original, amendment };
+  };
+
+  it('(a) CENSORED original + VERIFIED amendment → alpha+1 exactly once, superseded=1', () => {
+    const { route, original, amendment } = amended(60, {
+      outcome: 'CENSORED',
+      reasonCode: 'HEAD_DRIFT',
+      verifiedAt: null,
+      actualExecutor: 'claude',
+    });
+    expect(amendment.event_id).not.toBe(original.event_id);
+    expect(amendment.route_id).toBe(original.route_id);
+    expect(amendment['amend_seq']).toBe(1);
+    expect(amendment['amends']).toBe(original.event_id);
+    expect(amendment['amend_reason_code']).toBe('LATE_SIGNAL_IN_WINDOW');
+
+    const { posteriors, diagnostics } = foldPosteriors(
+      [route, original, amendment],
+      [...CANDIDATES],
+    );
+    expect(posteriors).toContainEqual({ candidateId: 'claude', alpha: 2, beta: 1 });
+    expect(diagnostics.applied).toBe(1);
+    expect(diagnostics.superseded).toBe(1);
+    // The superseded CENSORED row must NOT also be counted as a no-signal block.
+    expect(diagnostics.blockedNoSignal).toBe(0);
+  });
+
+  it('(b) NOT_VERIFIED original amended to VERIFIED → net alpha+1, no residual beta+1', () => {
+    const { route, original, amendment } = amended(61, {
+      outcome: 'NOT_VERIFIED_WITHIN_WINDOW',
+      reasonCode: 'WINDOW_EXPIRED',
+      verifiedAt: null,
+      actualExecutor: 'codex',
+    });
+    const { posteriors, diagnostics } = foldPosteriors(
+      [route, original, amendment],
+      [...CANDIDATES],
+    );
+    expect(posteriors).toContainEqual({ candidateId: 'codex', alpha: 2, beta: 1 });
+    expect(diagnostics.applied).toBe(1);
+    expect(diagnostics.superseded).toBe(1);
+  });
+
+  it('(c) reversed event order gives identical posteriors and diagnostics', () => {
+    const { route, original, amendment } = amended(62, {
+      outcome: 'CENSORED',
+      reasonCode: 'HEAD_DRIFT',
+      verifiedAt: null,
+      actualExecutor: 'gemini',
+    });
+    const forward = foldPosteriors([route, original, amendment], [...CANDIDATES]);
+    const reversed = foldPosteriors([amendment, original, route], [...CANDIDATES]);
+    expect(reversed).toStrictEqual(forward);
+    expect(forward.posteriors).toContainEqual({ candidateId: 'gemini', alpha: 2, beta: 1 });
+  });
+
+  it('(d) build-time lattice rejections name the offending field', () => {
+    const base = (
+      pr: number,
+      overrides: Partial<OutcomeFinalizedAmendmentInput>,
+    ): OutcomeFinalizedAmendmentInput => {
+      const original = buildOutcomeFinalized(finalInput(pr, { outcome: 'CENSORED' }));
+      return {
+        ...finalInput(pr),
+        outcome: 'VERIFIED_SUCCESS',
+        reasonCode: 'LATE_APPROVAL',
+        verifiedAt: IN_WINDOW,
+        observedAt: IN_WINDOW,
+        amendSeq: 1,
+        amends: original.event_id,
+        priorOutcome: 'CENSORED',
+        amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+        deadlineAt: DEADLINE,
+        evidenceCanonicalTimestamp: IN_WINDOW,
+        ...overrides,
+      };
+    };
+
+    // FROM a verified success — a verified review cannot be un-verified.
+    expect(() =>
+      buildOutcomeFinalizedAmendment(
+        base(63, { priorOutcome: 'VERIFIED_SUCCESS', outcome: 'NOT_VERIFIED_WITHIN_WINDOW' }),
+      ),
+    ).toThrow(/monotone upgrade/);
+    // INTO censored — the fail-closed floor is never a destination.
+    expect(() =>
+      buildOutcomeFinalizedAmendment(
+        base(64, { priorOutcome: 'NOT_VERIFIED_WITHIN_WINDOW', outcome: 'CENSORED' }),
+      ),
+    ).toThrow(/monotone upgrade/);
+    // Same-outcome amendments carry no information.
+    expect(() =>
+      buildOutcomeFinalizedAmendment(base(65, { priorOutcome: 'CENSORED', outcome: 'CENSORED' })),
+    ).toThrow(/monotone upgrade/);
+    // seq >= 2 is out of the v1 ceiling.
+    expect(() => buildOutcomeFinalizedAmendment(base(66, { amendSeq: 2 }))).toThrow(/amendSeq/);
+    expect(() => buildOutcomeFinalizedAmendment(base(67, { amendSeq: 0 }))).toThrow(/amendSeq/);
+    // A well-formed but WRONG amends pointer (another route's final) is a bug.
+    expect(() => buildOutcomeFinalizedAmendment(base(68, { amends: 'a'.repeat(64) }))).toThrow(
+      /amends/,
+    );
+    // Unknown correction reason.
+    expect(() =>
+      buildOutcomeFinalizedAmendment(base(69, { amendReasonCode: 'BECAUSE' as AmendReasonCode })),
+    ).toThrow(/amendReasonCode/);
+  });
+
+  it('(e) evidence dated after deadline_at is out of window', () => {
+    const original = buildOutcomeFinalized(finalInput(70, { outcome: 'CENSORED' }));
+    expect(() =>
+      buildOutcomeFinalizedAmendment({
+        ...finalInput(70),
+        outcome: 'VERIFIED_SUCCESS',
+        reasonCode: 'LATE_APPROVAL',
+        verifiedAt: IN_WINDOW,
+        observedAt: IN_WINDOW,
+        amendSeq: 1,
+        amends: original.event_id,
+        priorOutcome: 'CENSORED',
+        amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+        deadlineAt: DEADLINE,
+        evidenceCanonicalTimestamp: '2026-07-30T12:00:00.001Z',
+      }),
+    ).toThrow(/evidenceCanonicalTimestamp/);
+    // Exactly ON the deadline is inside the window.
+    expect(() =>
+      buildOutcomeFinalizedAmendment({
+        ...finalInput(70),
+        outcome: 'VERIFIED_SUCCESS',
+        reasonCode: 'LATE_APPROVAL',
+        verifiedAt: DEADLINE,
+        observedAt: DEADLINE,
+        amendSeq: 1,
+        amends: original.event_id,
+        priorOutcome: 'CENSORED',
+        amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+        deadlineAt: DEADLINE,
+        evidenceCanonicalTimestamp: DEADLINE,
+      }),
+    ).not.toThrow();
+    // Non-canonical timestamps make the string compare meaningless, so they
+    // are rejected rather than silently compared.
+    expect(() =>
+      buildOutcomeFinalizedAmendment({
+        ...finalInput(70),
+        outcome: 'VERIFIED_SUCCESS',
+        reasonCode: 'LATE_APPROVAL',
+        verifiedAt: IN_WINDOW,
+        observedAt: IN_WINDOW,
+        amendSeq: 1,
+        amends: original.event_id,
+        priorOutcome: 'CENSORED',
+        amendReasonCode: 'LATE_SIGNAL_IN_WINDOW',
+        deadlineAt: '2026-07-30T12:00:00Z',
+        evidenceCanonicalTimestamp: IN_WINDOW,
+      }),
+    ).toThrow(/deadlineAt/);
+  });
+
+  it('(f) a static-arm route still never learns through the amendment path', () => {
+    const { route, original, amendment } = amended(
+      71,
+      { outcome: 'CENSORED', reasonCode: 'HEAD_DRIFT', verifiedAt: null, actualExecutor: 'claude' },
+      {},
+      { policyArm: 'static' },
+    );
+    const { posteriors, diagnostics } = foldPosteriors(
+      [route, original, amendment],
+      [...CANDIDATES],
+    );
+    expect(posteriors).toContainEqual({ candidateId: 'claude', alpha: 1, beta: 1 });
+    expect(diagnostics.applied).toBe(0);
+    expect(diagnostics.blockedStaticArm).toBe(1);
+    expect(diagnostics.superseded).toBe(1);
+  });
+
+  it('(g) an amendment whose route.decided is absent stays unattributable', () => {
+    const { original, amendment } = amended(72, {
+      outcome: 'CENSORED',
+      reasonCode: 'HEAD_DRIFT',
+      verifiedAt: null,
+      actualExecutor: 'claude',
+    });
+    const { posteriors, diagnostics } = foldPosteriors([original, amendment], [...CANDIDATES]);
+    expect(posteriors).toContainEqual({ candidateId: 'claude', alpha: 1, beta: 1 });
+    expect(diagnostics.applied).toBe(0);
+    expect(diagnostics.blockedUnattributable).toBe(1);
+    expect(diagnostics.superseded).toBe(1);
+  });
+
+  it('(h) a zero-amendment stream reports superseded === 0 (gate accounting pin)', () => {
+    const events = [
+      ...pair(73, {}, { actualExecutor: 'claude' }),
+      ...pair(74, {}, { outcome: 'NOT_VERIFIED_WITHIN_WINDOW', actualExecutor: 'codex' }),
+      ...pair(75, {}, { outcome: 'CENSORED', verifiedAt: null }),
+    ];
+    const { diagnostics } = foldPosteriors(events, [...CANDIDATES]);
+    expect(diagnostics.superseded).toBe(0);
+    expect(diagnostics.applied).toBe(2);
+    expect(diagnostics.blockedNoSignal).toBe(1);
+  });
+
+  it("(i) two differently-id'd finals for one route resolve to exactly ONE update", () => {
+    // A state the current finalizer cannot produce — the resolution rule is
+    // frozen now precisely so a future writer cannot double-count into it.
+    const [route, final] = pair(76, {}, { actualExecutor: 'claude' });
+    const twin: OutcomeEvent = { ...final!, event_id: 'd'.repeat(64) };
+    const forward = foldPosteriors([route!, final!, twin], [...CANDIDATES]);
+    const reversed = foldPosteriors([route!, twin, final!], [...CANDIDATES]);
+    expect(forward.posteriors).toContainEqual({ candidateId: 'claude', alpha: 2, beta: 1 });
+    expect(forward.diagnostics.applied).toBe(1);
+    expect(forward.diagnostics.superseded).toBe(1);
+    expect(reversed).toStrictEqual(forward);
+  });
+
+  it('(j) CENSORED → NOT_VERIFIED_WITHIN_WINDOW demands complete coverage', () => {
+    const original = buildOutcomeFinalized(finalInput(77, { outcome: 'CENSORED' }));
+    const negative = (coverageComplete?: boolean): OutcomeFinalizedAmendmentInput => ({
+      ...finalInput(77),
+      outcome: 'NOT_VERIFIED_WITHIN_WINDOW',
+      reasonCode: 'WINDOW_EXPIRED',
+      verifiedAt: null,
+      observedAt: IN_WINDOW,
+      amendSeq: 1,
+      amends: original.event_id,
+      priorOutcome: 'CENSORED',
+      amendReasonCode: 'CENSOR_LIFTED_REOPENED',
+      deadlineAt: DEADLINE,
+      evidenceCanonicalTimestamp: IN_WINDOW,
+      ...(coverageComplete !== undefined ? { coverageComplete } : {}),
+    });
+    expect(() => buildOutcomeFinalizedAmendment(negative())).toThrow(/coverageComplete/);
+    expect(() => buildOutcomeFinalizedAmendment(negative(false))).toThrow(/coverageComplete/);
+    const ok = buildOutcomeFinalizedAmendment(negative(true));
+    expect(ok['outcome']).toBe('NOT_VERIFIED_WITHIN_WINDOW');
+    // coverageComplete is an input assertion, not a stored field.
+    expect(ok['coverage_complete']).toBeUndefined();
+  });
+
+  it('the amendment payload is the original shape plus exactly three fields', () => {
+    const { original, amendment } = amended(78, {
+      outcome: 'CENSORED',
+      reasonCode: 'HEAD_DRIFT',
+      verifiedAt: null,
+    });
+    const added = Object.keys(amendment).filter((k) => !(k in original));
+    expect(added.sort()).toStrictEqual(['amend_reason_code', 'amend_seq', 'amends']);
+    expect(amendment['event_type']).toBe('outcome.finalized');
+  });
+
+  it('FINALIZE_GRACE_HOURS is frozen at 24', () => {
+    expect(FINALIZE_GRACE_HOURS).toBe(24);
   });
 });

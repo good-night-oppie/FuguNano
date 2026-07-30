@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendOutcomeEvent,
   computeAttemptId,
+  computeFinalAmendId,
   computeFinalId,
   computeRouteId,
   computeSignalId,
@@ -397,5 +398,88 @@ describe('D10 append-side timestamp validation', () => {
     const back = readOutcomeLog(logPath);
     expect(back.events).toHaveLength(1);
     expect(back.events[0]!.observed_at).toBe('2026-07-23T12:00:00Z');
+  });
+});
+
+describe('D9 — amendment id + append-side amendment gate', () => {
+  const h = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
+
+  const mkAmendment = (overrides: Partial<OutcomeEvent> = {}): OutcomeEvent =>
+    mkFinalized({
+      event_id: computeFinalAmendId(routeId, 1),
+      outcome: 'VERIFIED_SUCCESS',
+      reason_code: 'LATE_APPROVAL',
+      amend_seq: 1,
+      amends: computeFinalId(routeId),
+      amend_reason_code: 'LATE_SIGNAL_IN_WINDOW',
+      ...overrides,
+    });
+
+  it('(k) computeFinalAmendId follows the frozen byte layout and namespaces seq', () => {
+    // The NUL before the seq digit is written with a unicode escape:
+    // a backslash-zero followed by a digit is a legacy octal escape
+    // and will not compile inside a template literal.
+    expect(computeFinalAmendId(routeId, 1)).toBe(
+      h(`pr-review-outcome-v1\0${routeId}\0amend\u00001`),
+    );
+    expect(computeFinalAmendId(routeId, 2)).toBe(
+      h(`pr-review-outcome-v1\0${routeId}\0amend\u00002`),
+    );
+    // Seq 0 is the original's formula and must stay byte-identical.
+    expect(computeFinalId(routeId)).toBe(h(`pr-review-outcome-v1\0${routeId}`));
+    expect(computeFinalAmendId(routeId, 1)).not.toBe(computeFinalId(routeId));
+    expect(computeFinalAmendId(routeId, 1)).not.toBe(computeFinalAmendId(routeId, 2));
+    // seq 0 / negative / fractional are caller bugs, not silent seq-1.
+    expect(() => computeFinalAmendId(routeId, 0)).toThrow(/amend_seq/);
+    expect(() => computeFinalAmendId(routeId, -1)).toThrow(/amend_seq/);
+    expect(() => computeFinalAmendId(routeId, 1.5)).toThrow(/amend_seq/);
+  });
+
+  it('(l) an amendment appends alongside its original and stays idempotent', () => {
+    expect(appendOutcomeEvent(logPath, mkFinalized())).toBe('appended');
+    const amendment = mkAmendment();
+    expect(appendOutcomeEvent(logPath, amendment)).toBe('appended');
+    expect(readOutcomeLog(logPath).events).toHaveLength(2);
+    // Byte-identical re-append is the retried-sync lane.
+    expect(appendOutcomeEvent(logPath, amendment)).toBe('duplicate-noop');
+    expect(readOutcomeLog(logPath).events).toHaveLength(2);
+    // Same seq, different payload → the id collides and fails closed.
+    expect(() =>
+      appendOutcomeEvent(logPath, mkAmendment({ reason_code: 'SOMETHING_ELSE' })),
+    ).toThrow(/DUPLICATE_ID_CONFLICT/);
+    expect(readOutcomeLog(logPath).events).toHaveLength(2);
+  });
+
+  it('the append gate rejects malformed amendment fields by field path', () => {
+    expect(() => appendOutcomeEvent(logPath, mkAmendment({ amend_seq: 0 }))).toThrow(
+      /INVALID_EVENT: amend_seq/,
+    );
+    expect(() => appendOutcomeEvent(logPath, mkAmendment({ amend_seq: 2 }))).toThrow(
+      /INVALID_EVENT: amend_seq/,
+    );
+    expect(() => appendOutcomeEvent(logPath, mkAmendment({ amend_seq: '1' }))).toThrow(
+      /INVALID_EVENT: amend_seq/,
+    );
+    expect(() => appendOutcomeEvent(logPath, mkAmendment({ amends: 'not-a-sha' }))).toThrow(
+      /INVALID_EVENT: amends/,
+    );
+    expect(() => appendOutcomeEvent(logPath, mkAmendment({ amend_reason_code: '' }))).toThrow(
+      /INVALID_EVENT: amend_reason_code/,
+    );
+    // Amendment fields present but the id is the ORIGINAL's — this would
+    // collide with the event it claims to supersede.
+    expect(() =>
+      appendOutcomeEvent(logPath, mkAmendment({ event_id: computeFinalId(routeId) })),
+    ).toThrow(/INVALID_EVENT: event_id/);
+    // A partial amendment (seq without pointer) is rejected, not ignored.
+    expect(() => appendOutcomeEvent(logPath, mkAmendment({ amends: undefined }))).toThrow(
+      /INVALID_EVENT: amends/,
+    );
+    expect(readOutcomeLog(logPath).events).toHaveLength(0);
+  });
+
+  it('the amendment gate is inert for pre-D9 finalized events', () => {
+    expect(appendOutcomeEvent(logPath, mkFinalized())).toBe('appended');
+    expect(readOutcomeLog(logPath).events).toHaveLength(1);
   });
 });

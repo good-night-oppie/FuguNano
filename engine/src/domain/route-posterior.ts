@@ -1,10 +1,13 @@
 import type { CandidateIdentity } from './candidate-identity.js';
 import { computeDispatchTerminalId } from './dispatch-machine.js';
 import {
+  CANONICAL_UTC_RE,
   computeAttemptId,
+  computeFinalAmendId,
   computeFinalId,
   computeRouteId,
   computeTaskId,
+  MAX_AMEND_SEQ,
   MAX_RETRY_EPOCHS,
   OutcomeLogError,
   OUTCOME_LOG_FORMAT,
@@ -82,6 +85,52 @@ export const MAX_ORPHANS_PER_COHORT = 3;
  */
 export const NO_DELIVERY_EVIDENCE = 'NO_DELIVERY_EVIDENCE' as const;
 export const DELIVERY_UNRESOLVABLE = 'DELIVERY_UNRESOLVABLE' as const;
+
+/**
+ * Why a superseding amendment was written (D9, closed vocabulary). Distinct
+ * from the terminal `reason_code`, which keeps describing the OUTCOME; this
+ * describes the CORRECTION.
+ */
+export const AMEND_REASON_CODES = [
+  'LATE_SIGNAL_IN_WINDOW',
+  'CENSOR_LIFTED_REOPENED',
+  'OPERATOR_CORRECTION',
+] as const;
+export type AmendReasonCode = (typeof AMEND_REASON_CODES)[number];
+
+/**
+ * Monotone upgrade lattice (D9, frozen). An amendment may only move a route
+ * TOWARD a decided signal, never away from one:
+ *
+ *   CENSORED                   → VERIFIED_SUCCESS
+ *   CENSORED                   → NOT_VERIFIED_WITHIN_WINDOW
+ *   NOT_VERIFIED_WITHIN_WINDOW → VERIFIED_SUCCESS
+ *
+ * Never FROM `VERIFIED_SUCCESS` (a verified review cannot be un-verified by a
+ * later sync) and never INTO `CENSORED` (censoring is the fail-closed floor,
+ * so re-censoring would let a sync erase a real observation). Same-outcome
+ * "amendments" are absent by construction: they carry no new information and
+ * would only add a superseded row.
+ */
+const AMEND_LATTICE: ReadonlyMap<TerminalOutcome, ReadonlySet<TerminalOutcome>> = new Map([
+  ['CENSORED', new Set<TerminalOutcome>(['VERIFIED_SUCCESS', 'NOT_VERIFIED_WITHIN_WINDOW'])],
+  ['NOT_VERIFIED_WITHIN_WINDOW', new Set<TerminalOutcome>(['VERIFIED_SUCCESS'])],
+  ['VERIFIED_SUCCESS', new Set<TerminalOutcome>()],
+]);
+
+/**
+ * Finalizer emission policy (D9). The outcome-sync module is unbuilt; this
+ * names and freezes the constant so it cannot be improvised later.
+ *
+ * A finalizer must NEVER emit `NOT_VERIFIED_WITHIN_WINDOW` before
+ * `deadline_at + FINALIZE_GRACE_HOURS`, and then only with COMPLETE coverage
+ * of the route's signal sources and a confirmed executor. Transient API or
+ * pagination incompleteness emits NOTHING and retries next cycle — an
+ * incomplete read is not evidence of absence. `CENSORED` is written only for
+ * permanent conditions (head drift, operator abandon, unresolvable
+ * disposition); it is the fail-closed floor the amendment lattice can lift.
+ */
+export const FINALIZE_GRACE_HOURS = 24;
 
 /**
  * Assignment-time cohort parity rule (single source): odd index ⇒ static,
@@ -372,6 +421,123 @@ export const buildOutcomeFinalized = (input: OutcomeFinalizedInput): OutcomeEven
   };
 };
 
+export interface OutcomeFinalizedAmendmentInput extends OutcomeFinalizedInput {
+  /** Sequence of this correction. v1 freezes the ceiling at MAX_AMEND_SEQ. */
+  readonly amendSeq: number;
+  /**
+   * `event_id` of the event this one supersedes. Fully derivable (seq 1 ⇒ the
+   * original's `computeFinalId`), so it is a cross-check, not a free pointer.
+   */
+  readonly amends: string;
+  /** The outcome recorded by the event this one supersedes. */
+  readonly priorOutcome: TerminalOutcome;
+  /** Why the correction was written (closed vocabulary). */
+  readonly amendReasonCode: AmendReasonCode;
+  /** `deadline_at` of the route being amended, canonical UTC millis. */
+  readonly deadlineAt: string;
+  /**
+   * Canonical timestamp of the evidence that justifies the upgrade — for a
+   * `github.signal` that is its `source_timestamp_at`. Must fall on or before
+   * `deadlineAt`: the window is about when the WORK happened, not when the
+   * sync noticed it.
+   */
+  readonly evidenceCanonicalTimestamp: string;
+  /**
+   * Required `true` for `CENSORED → NOT_VERIFIED_WITHIN_WINDOW`. A negative
+   * carries the same complete-coverage burden as an original negative, so it
+   * may never be reached by default.
+   */
+  readonly coverageComplete?: boolean;
+}
+
+/**
+ * Build a superseding `outcome.finalized` amendment (D9).
+ *
+ * The frozen four-type event vocabulary does NOT grow: an amendment is an
+ * `outcome.finalized` with a different, seq-namespaced `event_id`. Every
+ * constraint below is enforced at BUILD time so a malformed correction never
+ * reaches the log; the fold stays a pure, clock-free reader.
+ *
+ * `deadline_at` gets its one principled reader here — at amend-build time
+ * only. Reading it in the fold would make the posterior clock-dependent.
+ */
+export const buildOutcomeFinalizedAmendment = (
+  input: OutcomeFinalizedAmendmentInput,
+): OutcomeEvent => {
+  if (!TERMINAL_OUTCOMES.includes(input.priorOutcome)) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      `unknown priorOutcome ${String(input.priorOutcome)}`,
+    );
+  }
+  if (!AMEND_REASON_CODES.includes(input.amendReasonCode)) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      `unknown amendReasonCode ${String(input.amendReasonCode)}`,
+    );
+  }
+  if (!Number.isInteger(input.amendSeq) || input.amendSeq < 1 || input.amendSeq > MAX_AMEND_SEQ) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      `amendSeq must be an integer in 1..${String(MAX_AMEND_SEQ)}`,
+    );
+  }
+
+  // Base payload first: it re-runs every original-finalized invariant
+  // (outcome vocabulary, reasonCode, retryEpoch range) and derives route_id,
+  // so the amendment can never disagree with the shape the fold reads.
+  const base = buildOutcomeFinalized(input);
+  const routeId = base.route_id;
+
+  const allowed = AMEND_LATTICE.get(input.priorOutcome);
+  if (allowed === undefined || !allowed.has(input.outcome)) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      `outcome: ${input.priorOutcome} -> ${input.outcome} is not a monotone upgrade`,
+    );
+  }
+  if (input.outcome === 'NOT_VERIFIED_WITHIN_WINDOW' && input.coverageComplete !== true) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      'coverageComplete required for a negative amendment',
+    );
+  }
+
+  // String comparison is only sound on identical canonical forms, so pin both
+  // to the D10 canonical-millis shape rather than assuming it.
+  if (!CANONICAL_UTC_RE.test(input.deadlineAt)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'deadlineAt');
+  }
+  if (!CANONICAL_UTC_RE.test(input.evidenceCanonicalTimestamp)) {
+    throw new OutcomeLogError('INVALID_EVENT', 'evidenceCanonicalTimestamp');
+  }
+  if (input.evidenceCanonicalTimestamp > input.deadlineAt) {
+    throw new OutcomeLogError('INVALID_EVENT', 'evidenceCanonicalTimestamp');
+  }
+
+  // The superseded id is fully derivable: seq n supersedes seq n-1 of the SAME
+  // route, and seq 1 supersedes the original (implicit seq 0). An arbitrary
+  // 64-hex `amends` is a caller bug, exactly as with supersedes_route_id (D4).
+  const expectedAmends =
+    input.amendSeq === 1
+      ? computeFinalId(routeId)
+      : computeFinalAmendId(routeId, input.amendSeq - 1);
+  if (input.amends !== expectedAmends) {
+    throw new OutcomeLogError(
+      'INVALID_EVENT',
+      'amends must be the superseded event id of the same route',
+    );
+  }
+
+  return {
+    ...base,
+    event_id: computeFinalAmendId(routeId, input.amendSeq),
+    amend_seq: input.amendSeq,
+    amends: input.amends,
+    amend_reason_code: input.amendReasonCode,
+  };
+};
+
 export interface FoldDiagnostics {
   /** Updates applied to the posterior. */
   readonly applied: number;
@@ -381,12 +547,57 @@ export interface FoldDiagnostics {
   readonly blockedUnattributable: number;
   /** Blocked: outcome carries no learning signal (e.g. CENSORED). */
   readonly blockedNoSignal: number;
+  /**
+   * Finalized events that lost the per-route effective-final resolution (D9).
+   * Every distinct `outcome.finalized` lands in exactly one of the five
+   * counters, so `applied + blockedStaticArm + blockedUnattributable +
+   * blockedNoSignal + superseded` is the distinct finalized-event total.
+   * The live gate asserts `superseded === 0` — amendments during the cohort
+   * are a machinery event, not routine.
+   */
+  readonly superseded: number;
 }
 
 export interface FoldResult {
   readonly posteriors: ReadonlyArray<PosteriorEntry>;
   readonly diagnostics: FoldDiagnostics;
 }
+
+/**
+ * `amend_seq` as the fold sees it. This is a READER over bytes already on
+ * disk, so it never throws: the builder is the authority that a stored
+ * `amend_seq` is a valid integer ≥ 1, and anything else (absent, malformed,
+ * pre-D9) is the original, i.e. seq 0.
+ */
+const readAmendSeq = (event: OutcomeEvent): number => {
+  const raw = event['amend_seq'];
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 ? raw : 0;
+};
+
+/**
+ * The one `outcome.finalized` a route learns from: highest `amend_seq` wins.
+ *
+ * The tie-break is load-bearing rather than cosmetic. Two finalized events
+ * with the SAME seq for one route cannot be produced by the builders — the id
+ * is content-derived per seq, so a second write is a `DUPLICATE_ID_CONFLICT`
+ * at append — but the fold must still be total and order-independent over
+ * whatever bytes it is handed. Lowest `event_id` is an intrinsic, stable
+ * property of the events themselves, so the winner does not depend on the
+ * order they were read in.
+ */
+const effectiveFinal = (group: ReadonlyArray<OutcomeEvent>): OutcomeEvent => {
+  let winner = group[0]!;
+  let winnerSeq = readAmendSeq(winner);
+  for (let i = 1; i < group.length; i += 1) {
+    const candidate = group[i]!;
+    const seq = readAmendSeq(candidate);
+    if (seq > winnerSeq || (seq === winnerSeq && candidate.event_id < winner.event_id)) {
+      winner = candidate;
+      winnerSeq = seq;
+    }
+  }
+  return winner;
+};
 
 /**
  * Re-fold candidate posteriors from the event stream. `candidateIds` fixes
@@ -414,12 +625,25 @@ export const foldPosteriors = (
   let blockedStaticArm = 0;
   let blockedUnattributable = 0;
   let blockedNoSignal = 0;
+  let superseded = 0;
 
+  // Effective-final resolution (D9). Group the distinct finalized events by
+  // route and learn from ONE per route, so a superseding amendment corrects
+  // the posterior instead of double-counting against the original.
+  const finalsByRoute = new Map<string, OutcomeEvent[]>();
   const seenFinalIds = new Set<string>();
   for (const event of events) {
     if (event.event_type !== 'outcome.finalized') continue;
     if (seenFinalIds.has(event.event_id)) continue;
     seenFinalIds.add(event.event_id);
+    const group = finalsByRoute.get(event.route_id);
+    if (group === undefined) finalsByRoute.set(event.route_id, [event]);
+    else group.push(event);
+  }
+
+  for (const group of finalsByRoute.values()) {
+    superseded += group.length - 1;
+    const event = effectiveFinal(group);
 
     const outcome = event['outcome'];
     const learns = outcome === 'VERIFIED_SUCCESS' || outcome === 'NOT_VERIFIED_WITHIN_WINDOW';
@@ -455,7 +679,7 @@ export const foldPosteriors = (
       const c = counts.get(id)!;
       return { candidateId: id, alpha: c.alpha, beta: c.beta };
     }),
-    diagnostics: { applied, blockedStaticArm, blockedUnattributable, blockedNoSignal },
+    diagnostics: { applied, blockedStaticArm, blockedUnattributable, blockedNoSignal, superseded },
   };
 };
 
