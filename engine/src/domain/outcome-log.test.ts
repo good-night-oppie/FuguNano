@@ -636,6 +636,23 @@ describe('D9 — amendment id + append-side amendment gate', () => {
     expect(readOutcomeLog(logPath).events).toHaveLength(0);
   });
 
+  it("a rogue second final cannot shadow a route's real verdict", () => {
+    // Found by an adversarial verifier reaching past its own brief: the
+    // effective-final tie-break makes a same-seq collision DETERMINISTIC, but
+    // determinism is not safety. A second seq-0 final with an arbitrary
+    // 64-hex id used to append cleanly, and if that id sorted below the real
+    // one it won the tie-break and silently replaced the route's verdict.
+    expect(appendOutcomeEvent(logPath, mkFinalized())).toBe('appended');
+    const rogue = mkFinalized({
+      event_id: '0'.repeat(64), // sorts below every real sha256
+      outcome: 'NOT_VERIFIED_WITHIN_WINDOW',
+      verified_at: null,
+    });
+    expect(rogue.event_id < computeFinalId(routeId)).toBe(true);
+    expect(() => appendOutcomeEvent(logPath, rogue)).toThrow(/INVALID_EVENT: event_id/);
+    expect(readOutcomeLog(logPath).events).toHaveLength(1);
+  });
+
   it('the amendment gate is inert for pre-D9 finalized events', () => {
     expect(appendOutcomeEvent(logPath, mkFinalized())).toBe('appended');
     expect(readOutcomeLog(logPath).events).toHaveLength(1);

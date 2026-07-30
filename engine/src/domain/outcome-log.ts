@@ -382,7 +382,18 @@ const assertAmendmentShape = (
     }
   }
   if (!declaresAmendment) {
-    if (claimedSeq === null) return;
+    if (claimedSeq === null) {
+      // A NON-amendment final must carry the derivable seq-0 id. Without this
+      // the effective-final rule is only deterministic, not safe: a second
+      // seq-0 final for the same route with an arbitrary 64-hex id appends
+      // cleanly, and if that id sorts below the real one it WINS the tie-break
+      // and shadows the route's true verdict. computeFinalId is derivable, so
+      // any other id is a caller bug. Inert for every builder-made event.
+      if (event.event_id !== computeFinalId(event.route_id)) {
+        throw new OutcomeLogError('INVALID_EVENT', 'event_id');
+      }
+      return;
+    }
     // An id in the amendment namespace with no amendment fields would burn
     // that seq slot forever. Name the field that is missing, not the value.
     throw new OutcomeLogError('INVALID_EVENT', 'amend_seq');
