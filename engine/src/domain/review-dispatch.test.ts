@@ -786,7 +786,7 @@ describe('retry epoch + duplicate_route (D4)', () => {
       amends: original!.event_id,
       priorOutcome: 'CENSORED',
       amendReasonCode: 'OPERATOR_CORRECTION',
-      deadlineAt: '2036-07-30T12:00:00.000Z',
+      deadlineAt: '2026-07-30T12:00:00.000Z',
       evidenceCanonicalTimestamp: '2026-07-29T09:00:00.000Z',
     });
     expect(appendOutcomeEvent(logPath, lift)).toBe('appended');
