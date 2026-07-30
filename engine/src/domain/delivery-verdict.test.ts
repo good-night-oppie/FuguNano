@@ -108,6 +108,30 @@ describe('classifyDelivery', () => {
     );
   });
 
+  // (d) variant: reversed order — noise signal first, matching second → DELIVERED
+  // Verifies order-independent scanning: a later valid signal wins over earlier noise.
+  it('receipt-delivered — reversed order (noise first) → DELIVERED', () => {
+    const terminal = mkTerminal({ receipt: RECEIPT });
+    const noiseSignal = mkSignal({ actor: 'bot' });
+    const matchSignal = mkSignal({});
+    expect(classifyDelivery(ROUTE_ID, CANDIDATES, terminal, [noiseSignal, matchSignal])).toBe(
+      'DELIVERED',
+    );
+  });
+
+  // (e) gemini marker when only codex actually completed → marker should NOT match
+  // because wasExecutor('gemini') returns false.
+  it('receipt-no-match — gemini marker, only codex completed → PROCESS_COMPLETED', () => {
+    const terminal = mkTerminal({ receipt: RECEIPT });
+    const geminiAttemptId = computeAttemptId(ROUTE_ID, 'gemini');
+    const signal = mkSignal({
+      marker_attempt_id: geminiAttemptId,
+      actor: RECEIPT.actor,
+      body_sha256: RECEIPT.body_sha256,
+    });
+    expect(classifyDelivery(ROUTE_ID, CANDIDATES, terminal, [signal])).toBe('PROCESS_COMPLETED');
+  });
+
   // (f) DELIVERY_UNRESOLVABLE route must fold to no posterior update (fail-closed ruling)
   it('DELIVERY_UNRESOLVABLE candidate not in ranked list → DELIVERY_UNRESOLVABLE', () => {
     const terminal = mkTerminal({ receipt: RECEIPT });
