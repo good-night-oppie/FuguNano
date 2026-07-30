@@ -44,6 +44,15 @@ export const TERMINAL_OUTCOMES = [
 export type TerminalOutcome = (typeof TERMINAL_OUTCOMES)[number];
 
 /**
+ * D10 clock-skew gate for the (unbuilt) outcome-sync finalizer: a
+ * route-bound `github.signal` whose `source_timestamp_at` is earlier than
+ * `routed_at − 300s` ⇒ disposition CENSORED, reason_code
+ * `'CLOCK_SKEW_SUSPECT'`. Fail closed to no-update; timestamps are never
+ * "corrected". Named and frozen now; not consumed until the finalizer lands.
+ */
+export const ROUTED_AT_SKEW_TOLERANCE_SECONDS = 300;
+
+/**
  * Assignment-time cohort parity rule (single source): odd index ⇒ static,
  * even ⇒ thompson. The engine records and cross-checks; it never derives
  * the arm from the index.

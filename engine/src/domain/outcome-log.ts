@@ -38,12 +38,36 @@ export const EVENT_TYPES = [
 
 export type EventType = (typeof EVENT_TYPES)[number];
 
+/**
+ * Canonical UTC millis form required on every timestamp field at append
+ * time (D10). Matches `Date.prototype.toISOString()` output exactly —
+ * second-precision, offsets, and unparseable calendar values are rejected.
+ * Append-side only: the read path never applies this gate so pre-freeze
+ * bytes on disk remain readable.
+ */
+export const CANONICAL_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * Frozen field name on `github.signal` (schema-freeze v1 / D10): GitHub
+ * canonical timestamp of the source object, normalized via
+ * `new Date(x).toISOString()` at ingest. No builder exists yet — this
+ * pins the contract so a future builder cannot improvise an alternate name.
+ */
+export const GITHUB_SIGNAL_SOURCE_TIMESTAMP_FIELD = 'source_timestamp_at' as const;
+
 /** Frozen caps (spec §B6): single line 64 KiB, whole file 64 MiB. */
 export const MAX_LINE_BYTES = 64 * 1024;
 export const MAX_FILE_BYTES = 64 * 1024 * 1024;
 
 const LOCK_WAIT_SECONDS = 5;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/** Event types whose `observed_at` must be ≥ the matching route.decided's. */
+const ROUTE_BOUND_EVENT_TYPES: ReadonlySet<EventType> = new Set([
+  'dispatch.terminal',
+  'github.signal',
+  'outcome.finalized',
+]);
 
 export interface OutcomeEvent {
   readonly format: typeof OUTCOME_LOG_FORMAT;
@@ -197,6 +221,64 @@ const validateEvent = (event: OutcomeEvent): void => {
   assertNoSecretMaterial(event, 'event');
 };
 
+/**
+ * Append-side timestamp authority (D10). Field-path-only error text.
+ * Must NOT be called from the read path — pre-freeze second-precision
+ * bytes on disk must remain parseable.
+ */
+const assertCanonicalUtc = (value: unknown, fieldPath: string): void => {
+  if (
+    typeof value !== 'string' ||
+    !CANONICAL_UTC_RE.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new OutcomeLogError('INVALID_EVENT', fieldPath);
+  }
+};
+
+const assertAppendTimestampRules = (
+  event: OutcomeEvent,
+  priorEvents: ReadonlyArray<OutcomeEvent>,
+): void => {
+  assertCanonicalUtc(event.observed_at, 'observed_at');
+
+  if (event.event_type === 'route.decided') {
+    assertCanonicalUtc(event['routed_at'], 'routed_at');
+    assertCanonicalUtc(event['deadline_at'], 'deadline_at');
+    const routedAt = event['routed_at'] as string;
+    const deadlineAt = event['deadline_at'] as string;
+    if (!(deadlineAt > routedAt)) {
+      throw new OutcomeLogError('INVALID_EVENT', 'deadline_at');
+    }
+    if (event.observed_at !== routedAt) {
+      throw new OutcomeLogError('INVALID_EVENT', 'observed_at');
+    }
+  }
+
+  if (event.event_type === 'github.signal') {
+    assertCanonicalUtc(event[GITHUB_SIGNAL_SOURCE_TIMESTAMP_FIELD], 'source_timestamp_at');
+  }
+
+  if (event.event_type === 'outcome.finalized') {
+    const verifiedAt = event['verified_at'];
+    if (verifiedAt !== null && verifiedAt !== undefined) {
+      assertCanonicalUtc(verifiedAt, 'verified_at');
+      if (event['outcome'] !== 'VERIFIED_SUCCESS') {
+        throw new OutcomeLogError('INVALID_EVENT', 'verified_at');
+      }
+    }
+  }
+
+  if (ROUTE_BOUND_EVENT_TYPES.has(event.event_type)) {
+    const decided = priorEvents.find(
+      (e) => e.event_type === 'route.decided' && e.route_id === event.route_id,
+    );
+    if (decided !== undefined && !(event.observed_at >= decided.observed_at)) {
+      throw new OutcomeLogError('INVALID_EVENT', 'observed_at');
+    }
+  }
+};
+
 // --- read side -------------------------------------------------------------
 
 export interface ReadResult {
@@ -307,6 +389,9 @@ export const appendOutcomeEvent = (
         `event ${event.event_id} already recorded with different payload`,
       );
     }
+    // D10 append-side clock gate: after dedupe so a pre-freeze payload that
+    // is already on disk can still idempotent-noop without re-validation.
+    assertAppendTimestampRules(event, existing.events);
     const currentBytes = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
     if (currentBytes + lineBytes > maxFile) {
       throw new OutcomeLogError(
