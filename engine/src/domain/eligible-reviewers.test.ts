@@ -141,8 +141,8 @@ describe('thompson rank', () => {
           riskTags: [],
           changedPathCount: 1,
         },
-        routedAt: '2026-07-23T12:00:00Z',
-        deadlineAt: '2026-07-30T12:00:00Z',
+        routedAt: '2026-07-23T12:00:00.000Z',
+        deadlineAt: '2026-07-30T12:00:00.000Z',
         retryEpoch: 0,
         supersedesRouteId: null,
       }),
@@ -154,8 +154,8 @@ describe('thompson rank', () => {
         reasonCode: 'CLEAN_MERGE',
         actualExecutor: 'gemini',
         evidenceEventIds: [],
-        verifiedAt: '2026-07-25T12:00:00Z',
-        observedAt: '2026-07-25T12:00:00Z',
+        verifiedAt: '2026-07-25T12:00:00.000Z',
+        observedAt: '2026-07-25T12:00:00.000Z',
       }),
     ]).flat();
     // 40 wins for gemini vs flat priors for the rest: count wins over seeds

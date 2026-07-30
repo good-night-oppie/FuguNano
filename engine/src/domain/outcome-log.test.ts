@@ -34,14 +34,43 @@ afterEach(() => {
 
 const routeId = computeRouteId(computeTaskId('acme/widgets', 42, 'a'.repeat(40)));
 
+const ROUTED_AT = '2026-07-23T12:00:00.000Z';
+const DEADLINE_AT = '2026-07-30T12:00:00.000Z';
+
 const mkEvent = (overrides: Partial<OutcomeEvent> = {}): OutcomeEvent => ({
   format: 1,
   event_type: 'route.decided',
   event_id: computeAttemptId(routeId, 'claude'),
   route_id: routeId,
-  observed_at: '2026-07-23T12:00:00Z',
+  observed_at: ROUTED_AT,
+  routed_at: ROUTED_AT,
+  deadline_at: DEADLINE_AT,
   policy_arm: 'thompson',
   candidate_id: 'claude',
+  ...overrides,
+});
+
+const mkTerminal = (overrides: Partial<OutcomeEvent> = {}): OutcomeEvent => ({
+  format: 1,
+  event_type: 'dispatch.terminal',
+  event_id: computeAttemptId(routeId, 'terminal'),
+  route_id: routeId,
+  observed_at: ROUTED_AT,
+  terminal_state: 'COMPLETED',
+  ...overrides,
+});
+
+const mkFinalized = (overrides: Partial<OutcomeEvent> = {}): OutcomeEvent => ({
+  format: 1,
+  event_type: 'outcome.finalized',
+  event_id: computeFinalId(routeId),
+  route_id: routeId,
+  observed_at: '2026-07-25T12:00:00.000Z',
+  outcome: 'VERIFIED_SUCCESS',
+  reason_code: 'CLEAN_MERGE',
+  actual_executor: 'claude',
+  evidence_event_ids: [],
+  verified_at: '2026-07-25T12:00:00.000Z',
   ...overrides,
 });
 
@@ -224,5 +253,149 @@ describe('locking via util-linux flock', () => {
     const second = mkEvent({ event_id: computeAttemptId(routeId, 'gemini') });
     expect(appendOutcomeEvent(logPath, second)).toBe('appended');
     expect(readOutcomeLog(logPath).events).toHaveLength(2);
+  });
+});
+
+describe('D10 append-side timestamp validation', () => {
+  it('rejects second-precision observed_at on dispatch.terminal', () => {
+    expect(() =>
+      appendOutcomeEvent(logPath, mkTerminal({ observed_at: '2026-07-23T12:00:00Z' })),
+    ).toThrow(/INVALID_EVENT: observed_at/);
+  });
+
+  it('accepts canonical-millis observed_at on dispatch.terminal', () => {
+    expect(appendOutcomeEvent(logPath, mkTerminal())).toBe('appended');
+  });
+
+  it('rejects offset-form timestamps', () => {
+    expect(() =>
+      appendOutcomeEvent(logPath, mkTerminal({ observed_at: '2026-07-23T12:00:00+00:00' })),
+    ).toThrow(/INVALID_EVENT: observed_at/);
+  });
+
+  it('rejects pattern-plausible but unparseable calendar values', () => {
+    expect(() =>
+      appendOutcomeEvent(logPath, mkTerminal({ observed_at: '2026-13-45T99:99:99.000Z' })),
+    ).toThrow(/INVALID_EVENT: observed_at/);
+  });
+
+  it('route.decided requires deadline_at strictly after routed_at', () => {
+    expect(() =>
+      appendOutcomeEvent(
+        logPath,
+        mkEvent({
+          routed_at: ROUTED_AT,
+          deadline_at: ROUTED_AT,
+          observed_at: ROUTED_AT,
+        }),
+      ),
+    ).toThrow(/INVALID_EVENT: deadline_at/);
+    expect(
+      appendOutcomeEvent(
+        logPath,
+        mkEvent({
+          routed_at: ROUTED_AT,
+          deadline_at: DEADLINE_AT,
+          observed_at: ROUTED_AT,
+        }),
+      ),
+    ).toBe('appended');
+  });
+
+  it('route.decided requires observed_at === routed_at', () => {
+    expect(() =>
+      appendOutcomeEvent(
+        logPath,
+        mkEvent({
+          routed_at: ROUTED_AT,
+          deadline_at: DEADLINE_AT,
+          observed_at: '2026-07-23T12:00:00.001Z',
+        }),
+      ),
+    ).toThrow(/INVALID_EVENT: observed_at/);
+  });
+
+  it('dispatch.terminal observed_at equal to route.decided is allowed (>= pin)', () => {
+    appendOutcomeEvent(logPath, mkEvent());
+    expect(appendOutcomeEvent(logPath, mkTerminal({ observed_at: ROUTED_AT }))).toBe('appended');
+  });
+
+  it('dispatch.terminal observed_at 1ms before route.decided is rejected', () => {
+    appendOutcomeEvent(logPath, mkEvent());
+    expect(() =>
+      appendOutcomeEvent(logPath, mkTerminal({ observed_at: '2026-07-23T11:59:59.999Z' })),
+    ).toThrow(/INVALID_EVENT: observed_at/);
+  });
+
+  it('skips the route.decided cross-check when that route is absent', () => {
+    const orphanRoute = computeRouteId(computeTaskId('acme/other', 1, 'b'.repeat(40)));
+    expect(
+      appendOutcomeEvent(
+        logPath,
+        mkTerminal({
+          route_id: orphanRoute,
+          event_id: computeAttemptId(orphanRoute, 'terminal'),
+          observed_at: ROUTED_AT,
+        }),
+      ),
+    ).toBe('appended');
+  });
+
+  it('outcome.finalized verified_at rules', () => {
+    expect(() =>
+      appendOutcomeEvent(
+        logPath,
+        mkFinalized({
+          outcome: 'CENSORED',
+          reason_code: 'CLOCK_SKEW_SUSPECT',
+          verified_at: '2026-07-25T12:00:00.000Z',
+        }),
+      ),
+    ).toThrow(/INVALID_EVENT: verified_at/);
+
+    expect(
+      appendOutcomeEvent(
+        logPath,
+        mkFinalized({
+          event_id: computeFinalId(
+            computeRouteId(computeTaskId('acme/widgets', 7, 'c'.repeat(40))),
+          ),
+          route_id: computeRouteId(computeTaskId('acme/widgets', 7, 'c'.repeat(40))),
+          outcome: 'NOT_VERIFIED_WITHIN_WINDOW',
+          reason_code: 'WINDOW_ELAPSED',
+          verified_at: null,
+        }),
+      ),
+    ).toBe('appended');
+
+    expect(
+      appendOutcomeEvent(
+        logPath,
+        mkFinalized({
+          event_id: computeFinalId(
+            computeRouteId(computeTaskId('acme/widgets', 8, 'd'.repeat(40))),
+          ),
+          route_id: computeRouteId(computeTaskId('acme/widgets', 8, 'd'.repeat(40))),
+          outcome: 'VERIFIED_SUCCESS',
+          verified_at: '2026-07-25T12:00:00.000Z',
+        }),
+      ),
+    ).toBe('appended');
+  });
+
+  it('READ path still accepts pre-freeze second-precision bytes', () => {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    const legacy = {
+      format: 1,
+      event_type: 'dispatch.terminal',
+      event_id: computeAttemptId(routeId, 'legacy'),
+      route_id: routeId,
+      observed_at: '2026-07-23T12:00:00Z',
+      terminal_state: 'COMPLETED',
+    };
+    fs.writeFileSync(logPath, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+    const back = readOutcomeLog(logPath);
+    expect(back.events).toHaveLength(1);
+    expect(back.events[0]!.observed_at).toBe('2026-07-23T12:00:00Z');
   });
 });
