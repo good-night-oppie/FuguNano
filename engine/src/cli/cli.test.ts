@@ -7057,20 +7057,48 @@ describe('fugue CLI', () => {
     });
 
     it('run exits 1 with a clear error for a missing spec', async () => {
-      const { code, err } = await run(['self-harness', 'run', '--spec', '/no/such/spec.json']);
+      const { code, err } = await run([
+        'self-harness',
+        'run',
+        '--spec',
+        '/no/such/spec.json',
+        '--cwd',
+        dir,
+      ]);
 
       expect(code).toBe(1);
       expect(err).toContain('no self-harness spec');
     });
 
     it('run exits 1 for an invalid JSON spec', async () => {
-      const spec = join(dir, 'bad.json');
+      // The spec lives outside --cwd: evaluator containment (probe 6 / D13) is
+      // checked before parsing, so an in-cwd spec would fail on containment and
+      // never reach the JSON error this test is about.
+      const evalDir = await mkdtemp(join(tmpdir(), 'fugue-sh-eval-'));
+      const spec = join(evalDir, 'bad.json');
       await writeFile(spec, '{ nope', 'utf8');
 
-      const { code, err } = await run(['self-harness', 'run', '--spec', spec]);
+      const { code, err } = await run(['self-harness', 'run', '--spec', spec, '--cwd', dir]);
 
       expect(code).toBe(1);
       expect(err).toContain('invalid JSON:');
+      await rm(evalDir, { recursive: true, force: true });
+    });
+
+    it('run refuses a spec inside the dispatch cwd (probe 6 / D13)', async () => {
+      // The leak this replaced: both the harness dispatch and the `sh -c` gate
+      // run in --cwd, so a spec sitting there hands the scored candidate every
+      // gate string. Measured: a stub that never did the task scored 2/2 on
+      // BOTH splits. Evidence ~/.harness/tcfugu20/probe6-evaluator-leakage/.
+      const spec = join(dir, 'self-harness.json');
+      const template = await run(['self-harness', 'template']);
+      await writeFile(spec, template.out, 'utf8');
+
+      const { code, err } = await run(['self-harness', 'run', '--spec', spec, '--cwd', dir]);
+
+      expect(code).toBe(1);
+      expect(err).toContain('candidate can read every gate');
+      expect(err).not.toContain('test -f');
     });
 
     it('run reads the run store and reports same surfaces when no weaknesses are mined', async () => {
@@ -7097,7 +7125,10 @@ describe('fugue CLI', () => {
         'failure-recovery': 'recover',
         'runtime-policy': 'policy',
       };
-      const spec = join(dir, 'self-harness.json');
+      // Spec outside --cwd: evaluator containment (probe 6 / D13) refuses a
+      // spec the scored candidate could read.
+      const evalDir = await mkdtemp(join(tmpdir(), 'fugue-sh-eval-'));
+      const spec = join(evalDir, 'self-harness.json');
       await writeFile(
         spec,
         `${JSON.stringify({
@@ -7147,7 +7178,9 @@ describe('fugue CLI', () => {
         detail: 'task-a -> agent',
       });
 
-      const spec = join(dir, 'generated-self-harness.json');
+      // Spec outside --cwd: evaluator containment (probe 6 / D13).
+      const evalDir = await mkdtemp(join(tmpdir(), 'fugue-sh-eval-'));
+      const spec = join(evalDir, 'generated-self-harness.json');
       await writeFile(spec, template.out, 'utf8');
 
       const { code, out, err } = await run([

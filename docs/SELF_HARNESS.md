@@ -28,14 +28,32 @@ orchestration/fuguectl/fuguectl self-harness template > /tmp/self-harness.json
 Run the loop:
 
 ```bash
+# The spec lives OUTSIDE --cwd. Keeping it in the workspace lets the scored
+# candidate read every gate; the CLI refuses that arrangement.
 orchestration/fuguectl/fuguectl self-harness run \
-  --spec /tmp/self-harness.json \
+  --spec ~/.config/fugunano/self-harness.json \
   --state ~/.config/fugunano \
   --cwd /path/to/workspace
 ```
 
-`--cwd` is passed to both harness dispatches and shell gates. Use it whenever a
-gate depends on relative paths.
+`--cwd` is **required**, and the spec must live **outside** it. Both the harness
+dispatch and the `sh -c` gate run in `--cwd`, so anything reachable from there
+is readable by the very agent being scored — and the spec carries every gate
+string, i.e. every answer. The CLI resolves both paths with `realpath` and
+refuses to run when the spec is inside the working directory.
+
+This was measured, not assumed: a stub candidate that never performed the task
+and only searched its working directory for gate material scored a perfect 2/2
+on **both** the held-in and held-out splits. A candidate that reads the spec
+games both splits equally, so held-out — whose whole purpose is to be
+un-gameable — stops being evidence. Moving the spec out closed it completely
+and left honest candidates unaffected. The flag was previously optional, and
+omitting it made both the dispatch and the gate inherit the operator's shell
+directory, which is where the old example put the spec: the leak was what
+happened when the docs were followed.
+
+Keep evaluator material — the spec, any answer key, fixture expectations — in a
+directory the candidate is never spawned in.
 
 ## Spec Schema
 
@@ -181,7 +199,8 @@ npm run build
 ../orchestration/fuguectl/fuguectl self-harness template
 
 # Error-path smoke: should exit 1 and print "no self-harness spec at /tmp/nope".
-../orchestration/fuguectl/fuguectl self-harness run --spec /tmp/nope
+# --cwd is required, so pass one even on the error path.
+../orchestration/fuguectl/fuguectl self-harness run --spec /tmp/nope --cwd /tmp
 ```
 
 A successful `run` smoke needs a real source `RunStore` record under
@@ -189,8 +208,10 @@ A successful `run` smoke needs a real source `RunStore` record under
 completed run first, put its ID in `runId`, then run from the repo root:
 
 ```bash
+# The spec lives OUTSIDE --cwd. Keeping it in the workspace lets the scored
+# candidate read every gate; the CLI refuses that arrangement.
 orchestration/fuguectl/fuguectl self-harness run \
-  --spec /tmp/self-harness.json \
+  --spec ~/.config/fugunano/self-harness.json \
   --state ~/.config/fugunano \
   --cwd /path/to/workspace
 ```
