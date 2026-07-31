@@ -37,6 +37,7 @@ __pycache__/
 # session-memory digest auto-regenerated into cwd by the fleet harness
 # (~/.claude/scripts/distill_highlights.py) — not repo content
 LATEST_HIGHLIGHTS.md
+kaos.db
 .vscode/
 
 # Third-party trademark asset used only as a local design reference in
