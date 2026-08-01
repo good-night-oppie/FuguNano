@@ -203,6 +203,7 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
   if (parsed.caseFiles !== undefined) {
     const result = parseStringArray(parsed.caseFiles, 'caseFiles');
     if (!result.ok) return result;
+    const basenames = new Set<string>();
     for (let index = 0; index < result.value.length; index += 1) {
       const path = result.value[index] ?? '';
       if (path.trim().length === 0) {
@@ -211,6 +212,13 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
       if (!path.startsWith('/')) {
         return err(`caseFiles[${String(index)}] must be an absolute path`);
       }
+      // Files are copied flat into each workspace, so two sources sharing a
+      // basename would silently shadow one another.
+      const name = path.slice(path.lastIndexOf('/') + 1);
+      if (basenames.has(name)) {
+        return err(`caseFiles has duplicate basename "${name}"`);
+      }
+      basenames.add(name);
     }
     caseFiles = result.value;
   }
@@ -218,9 +226,15 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
   let caseFilePins: Readonly<Record<string, string>> | undefined;
   if (parsed.caseFilePins !== undefined) {
     if (!isRecord(parsed.caseFilePins)) return err('caseFilePins must be an object');
+    const declared = new Set(caseFiles ?? []);
     const pins: Record<string, string> = {};
     for (const [path, pin] of Object.entries(parsed.caseFilePins)) {
       if (!path.startsWith('/')) return err(`caseFilePins key "${path}" must be an absolute path`);
+      // A pin key that matches no caseFiles entry is never consulted: the
+      // operator believes the file is pinned while it is copied unchecked.
+      if (!declared.has(path)) {
+        return err(`caseFilePins key "${path}" does not match any caseFiles entry`);
+      }
       if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/u.test(pin)) {
         return err(`caseFilePins["${path}"] must be a 64-char lowercase sha256 hex digest`);
       }

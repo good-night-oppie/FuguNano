@@ -488,3 +488,29 @@ describe('TaskListHarnessValidator — caseFile source-hash pins', () => {
     expect(harness.requests).toHaveLength(1);
   });
 });
+
+describe('TaskListHarnessValidator — caseFiles basename collisions', () => {
+  it('fails closed when two caseFiles share a basename (silent-overwrite guard)', async () => {
+    const { root } = await wsSetup();
+    const dirA = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-a-'));
+    const dirB = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-b-'));
+    const fileA = pathJoin(dirA, 'CONVENTIONS.md');
+    const fileB = pathJoin(dirB, 'CONVENTIONS.md');
+    await fsWriteFile(fileA, 'RULE A');
+    await fsWriteFile(fileB, 'RULE B');
+    const harness = new SequencedHarness([pass('never-reached')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'x' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: () => true,
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [fileA, fileB],
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 0, inTotal: 1, outPass: 0, outTotal: 0 });
+    expect(harness.requests).toHaveLength(0);
+  });
+});

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, copyFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import type { DispatchError, DispatchResult } from '../../domain/dispatch.js';
@@ -146,17 +146,28 @@ export class TaskListHarnessValidator<TCase> implements HarnessValidator {
       return false;
     }
     try {
+      const takenNames = new Set<string>();
       for (const file of this.caseFiles) {
+        // Two sources that share a basename would silently overwrite each
+        // other in the flat workspace, scoring the candidate against only one
+        // of the configured files. Fail closed instead.
+        const name = basename(file);
+        if (takenNames.has(name)) return false;
+        takenNames.add(name);
+
+        // Read ONCE and write those exact bytes: hashing the source and then
+        // re-reading it in copyFile leaves a TOCTOU window where the copied
+        // content differs from the content whose digest was verified.
+        const content = await readFile(file);
         const pin = this.caseFilePins[file];
         if (pin !== undefined) {
-          // Hash the SOURCE before every copy: a caseFile tampered mid-run
-          // (the conventions-mutation attack, upstream variant) fails the
-          // case closed instead of silently rewriting the evaluation's rules.
-          const content = await readFile(file);
+          // A caseFile tampered mid-run (the conventions-mutation attack,
+          // upstream variant) fails the case closed instead of silently
+          // rewriting the evaluation's rules.
           const digest = createHash('sha256').update(content).digest('hex');
           if (digest !== pin) return false;
         }
-        await copyFile(file, join(workspace, basename(file)));
+        await writeFile(join(workspace, name), content);
       }
       const result = await this.dispatch(prompt, workspace);
       if (result === undefined || !isOk(result)) return false;
