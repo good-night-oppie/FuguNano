@@ -159,17 +159,27 @@ export const wireSelfHarness = (cfg: WireSelfHarnessConfig): SelfHarnessLoop => 
       heldOut: cfg.spec.heldOut,
       agent: cfg.spec.agent,
       renderPrompt: (config, testCase) => renderTemplate(testCase.promptTemplate, config),
-      verify: async (testCase) => {
-        // CLI specs use shell gates as side-effect checks. Custom validators can still
-        // inspect DispatchResult directly by constructing TaskListHarnessValidator themselves.
+      verify: async (testCase, _result, workspace) => {
+        // CLI specs use shell gates as side-effect checks, run inside the same
+        // ephemeral per-case workspace the dispatch used (falling back to the
+        // shared cwd when no workspaceRoot is configured). Custom validators
+        // can still inspect DispatchResult directly by constructing
+        // TaskListHarnessValidator themselves.
         try {
-          const options = cfg.cwd !== undefined ? { cwd: cfg.cwd } : {};
+          const gateCwd = workspace !== '' ? workspace : cfg.cwd;
+          const options = gateCwd !== undefined ? { cwd: gateCwd } : {};
           return (await runner.run('sh', ['-c', testCase.gate], options)).code === 0;
         } catch {
           return false;
         }
       },
       ...(cfg.spec.samples !== undefined ? { samples: cfg.spec.samples } : {}),
+      // Ephemeral per-case workspaces under --cwd: each (case, sample) gets a
+      // fresh mkdtemp dir with fresh caseFiles copies; dispatch + gate both run
+      // there; the dir is destroyed after. D13 containment holds transitively:
+      // case dirs live under --cwd and the spec must be outside --cwd.
+      ...(cfg.cwd !== undefined ? { workspaceRoot: cfg.cwd } : {}),
+      ...(cfg.spec.caseFiles !== undefined ? { caseFiles: cfg.spec.caseFiles } : {}),
     }),
     k: cfg.spec.k,
   });

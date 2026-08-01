@@ -309,3 +309,39 @@ describe('renderSelfHarnessSpecTemplate', () => {
     expect(result.value.heldIn[0]?.gate).not.toBe(result.value.heldOut[0]?.gate);
   });
 });
+
+describe('parseSelfHarnessSpec — caseFiles', () => {
+  it('accepts absolute caseFiles paths', () => {
+    const spec = validObject();
+    spec.caseFiles = ['/abs/CONVENTIONS.md', '/abs/other.txt'];
+    const result = parseObject(spec);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.caseFiles).toEqual(['/abs/CONVENTIONS.md', '/abs/other.txt']);
+  });
+
+  it('omits caseFiles when absent', () => {
+    const result = parseObject(validObject());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.caseFiles).toBeUndefined();
+  });
+
+  it('rejects a relative caseFiles path', () => {
+    const spec = validObject();
+    spec.caseFiles = ['relative/path.md'];
+    expect(expectError(spec)).toBe('caseFiles[0] must be an absolute path');
+  });
+
+  it('rejects a non-string caseFiles entry', () => {
+    const spec = validObject();
+    spec.caseFiles = [42];
+    expect(expectError(spec)).toBe('caseFiles[0] must be a string');
+  });
+
+  it('rejects an empty caseFiles entry', () => {
+    const spec = validObject();
+    spec.caseFiles = ['  '];
+    expect(expectError(spec)).toBe('caseFiles[0] must be a non-empty string');
+  });
+});

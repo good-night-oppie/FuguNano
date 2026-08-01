@@ -22,6 +22,15 @@ export interface SelfHarnessSpec {
   readonly samples?: number;
   /** Source run mined on every round; callers that need fresh evidence should run the CLI per source run. */
   readonly runId: string;
+  /**
+   * Absolute paths copied fresh into each case's ephemeral workspace before
+   * its dispatch (e.g. a conventions file the scored agent must discover).
+   * Every path must be absolute and must lie OUTSIDE --cwd is NOT required —
+   * the source may live anywhere readable; only the spec itself is
+   * containment-checked. Fresh copies per case mean a candidate that mutates
+   * its copy cannot poison later cases.
+   */
+  readonly caseFiles?: readonly string[];
   readonly config: HarnessConfig;
   readonly heldIn: readonly EvalCase[];
   readonly heldOut: readonly EvalCase[];
@@ -38,6 +47,7 @@ const SPEC_KEY_SET: ReadonlySet<string> = new Set([
   'rounds',
   'samples',
   'runId',
+  'caseFiles',
   'config',
   'heldIn',
   'heldOut',
@@ -183,6 +193,22 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
     samples = parsed.samples;
   }
 
+  let caseFiles: readonly string[] | undefined;
+  if (parsed.caseFiles !== undefined) {
+    const result = parseStringArray(parsed.caseFiles, 'caseFiles');
+    if (!result.ok) return result;
+    for (let index = 0; index < result.value.length; index += 1) {
+      const path = result.value[index] ?? '';
+      if (path.trim().length === 0) {
+        return err(`caseFiles[${String(index)}] must be a non-empty string`);
+      }
+      if (!path.startsWith('/')) {
+        return err(`caseFiles[${String(index)}] must be an absolute path`);
+      }
+    }
+    caseFiles = result.value;
+  }
+
   const config = parseConfig(parsed.config);
   if (!config.ok) return config;
 
@@ -203,7 +229,8 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
   };
   const withHarness = parsed.harness === undefined ? base : { ...base, harness: parsed.harness };
   const withArgs = harnessArgs === undefined ? withHarness : { ...withHarness, harnessArgs };
-  return ok(samples === undefined ? withArgs : { ...withArgs, samples });
+  const withCaseFiles = caseFiles === undefined ? withArgs : { ...withArgs, caseFiles };
+  return ok(samples === undefined ? withCaseFiles : { ...withCaseFiles, samples });
 };
 
 export const renderSelfHarnessSpecTemplate = (): string => {

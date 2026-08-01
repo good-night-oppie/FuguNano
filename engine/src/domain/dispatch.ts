@@ -17,6 +17,13 @@ export interface DispatchRequest {
   readonly workspace?: string;
   /** Optional task type (feeds the allocation flywheel downstream). */
   readonly taskType?: string;
+  /**
+   * Optional per-dispatch working directory; overrides the harness's
+   * constructor-level cwd for this call. Lets a caller run each dispatch in
+   * an ephemeral workspace (e.g. the Self-Harness validator's per-case dirs)
+   * without constructing a harness per case.
+   */
+  readonly cwd?: string;
 }
 
 export interface DispatchResult {
