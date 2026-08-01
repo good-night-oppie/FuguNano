@@ -345,3 +345,29 @@ describe('parseSelfHarnessSpec — caseFiles', () => {
     expect(expectError(spec)).toBe('caseFiles[0] must be a non-empty string');
   });
 });
+
+describe('parseSelfHarnessSpec — caseFilePins', () => {
+  it('accepts valid sha256 pins keyed by absolute path', () => {
+    const spec = validObject();
+    spec.caseFiles = ['/abs/CONVENTIONS.md'];
+    spec.caseFilePins = { '/abs/CONVENTIONS.md': 'a'.repeat(64) };
+    const result = parseObject(spec);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.value.caseFilePins).toEqual({ '/abs/CONVENTIONS.md': 'a'.repeat(64) });
+  });
+
+  it('rejects a non-hex pin', () => {
+    const spec = validObject();
+    spec.caseFilePins = { '/abs/CONVENTIONS.md': 'not-a-hash' };
+    expect(expectError(spec)).toBe(
+      'caseFilePins["/abs/CONVENTIONS.md"] must be a 64-char lowercase sha256 hex digest',
+    );
+  });
+
+  it('rejects a relative pin key', () => {
+    const spec = validObject();
+    spec.caseFilePins = { 'rel/path.md': 'a'.repeat(64) };
+    expect(expectError(spec)).toBe('caseFilePins key "rel/path.md" must be an absolute path');
+  });
+});

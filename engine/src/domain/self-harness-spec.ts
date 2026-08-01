@@ -25,12 +25,17 @@ export interface SelfHarnessSpec {
   /**
    * Absolute paths copied fresh into each case's ephemeral workspace before
    * its dispatch (e.g. a conventions file the scored agent must discover).
-   * Every path must be absolute and must lie OUTSIDE --cwd is NOT required —
-   * the source may live anywhere readable; only the spec itself is
+   * The source may live anywhere readable; only the spec itself is
    * containment-checked. Fresh copies per case mean a candidate that mutates
    * its copy cannot poison later cases.
    */
   readonly caseFiles?: readonly string[];
+  /**
+   * Optional sha256 pins keyed by caseFiles path. A pinned file's SOURCE is
+   * hashed before every copy; mismatch fails the case closed — a tampered
+   * conventions file cannot silently rewrite the evaluation's rules mid-run.
+   */
+  readonly caseFilePins?: Readonly<Record<string, string>>;
   readonly config: HarnessConfig;
   readonly heldIn: readonly EvalCase[];
   readonly heldOut: readonly EvalCase[];
@@ -48,6 +53,7 @@ const SPEC_KEY_SET: ReadonlySet<string> = new Set([
   'samples',
   'runId',
   'caseFiles',
+  'caseFilePins',
   'config',
   'heldIn',
   'heldOut',
@@ -209,6 +215,20 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
     caseFiles = result.value;
   }
 
+  let caseFilePins: Readonly<Record<string, string>> | undefined;
+  if (parsed.caseFilePins !== undefined) {
+    if (!isRecord(parsed.caseFilePins)) return err('caseFilePins must be an object');
+    const pins: Record<string, string> = {};
+    for (const [path, pin] of Object.entries(parsed.caseFilePins)) {
+      if (!path.startsWith('/')) return err(`caseFilePins key "${path}" must be an absolute path`);
+      if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/u.test(pin)) {
+        return err(`caseFilePins["${path}"] must be a 64-char lowercase sha256 hex digest`);
+      }
+      pins[path] = pin;
+    }
+    caseFilePins = pins;
+  }
+
   const config = parseConfig(parsed.config);
   if (!config.ok) return config;
 
@@ -230,7 +250,8 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
   const withHarness = parsed.harness === undefined ? base : { ...base, harness: parsed.harness };
   const withArgs = harnessArgs === undefined ? withHarness : { ...withHarness, harnessArgs };
   const withCaseFiles = caseFiles === undefined ? withArgs : { ...withArgs, caseFiles };
-  return ok(samples === undefined ? withCaseFiles : { ...withCaseFiles, samples });
+  const withPins = caseFilePins === undefined ? withCaseFiles : { ...withCaseFiles, caseFilePins };
+  return ok(samples === undefined ? withPins : { ...withPins, samples });
 };
 
 export const renderSelfHarnessSpecTemplate = (): string => {

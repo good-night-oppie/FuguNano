@@ -314,18 +314,18 @@ describe('TaskListHarnessValidator', () => {
   });
 });
 
-describe('TaskListHarnessValidator — ephemeral per-case workspaces', () => {
-  const wsSetup = async () => {
-    const root = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-ws-root-'));
-    const conventions = pathJoin(
-      root,
-      '..',
-      `conv-${Date.now()}-${Math.random().toString(36).slice(2)}.md`,
-    );
-    await fsWriteFile(conventions, 'RULE: AHOY');
-    return { root, conventions, join: pathJoin };
-  };
+const wsSetup = async () => {
+  const root = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-ws-root-'));
+  const conventions = pathJoin(
+    root,
+    '..',
+    `conv-${Date.now()}-${Math.random().toString(36).slice(2)}.md`,
+  );
+  await fsWriteFile(conventions, 'RULE: AHOY');
+  return { root, conventions, join: pathJoin };
+};
 
+describe('TaskListHarnessValidator — ephemeral per-case workspaces', () => {
   it('dispatches each case in a fresh workspace with caseFiles copied in', async () => {
     const { root, conventions } = await wsSetup();
 
@@ -442,5 +442,49 @@ describe('TaskListHarnessValidator — ephemeral per-case workspaces', () => {
 
     expect(workspaces).toEqual(['']);
     expect(harness.requests[0]?.cwd).toBeUndefined();
+  });
+});
+
+describe('TaskListHarnessValidator — caseFile source-hash pins', () => {
+  it('fails closed when a pinned caseFile source hash mismatches (tamper detection)', async () => {
+    const { root, conventions } = await wsSetup();
+    const harness = new SequencedHarness([pass('never-reached')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'x' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: () => true,
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [conventions],
+      caseFilePins: { [conventions]: 'deadbeef'.repeat(8) },
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 0, inTotal: 1, outPass: 0, outTotal: 0 });
+    // Tamper detection precedes the dispatch.
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it('passes the pin check when the source hash matches', async () => {
+    const { createHash } = await import('node:crypto');
+    const { root, conventions } = await wsSetup();
+    const body = await fsReadFile(conventions);
+    const pin = createHash('sha256').update(body).digest('hex');
+    const harness = new SequencedHarness([pass('ok')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'ok' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: (_testCase, result) => result.output === 'ok',
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [conventions],
+      caseFilePins: { [conventions]: pin },
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 1, inTotal: 1, outPass: 0, outTotal: 0 });
+    expect(harness.requests).toHaveLength(1);
   });
 });

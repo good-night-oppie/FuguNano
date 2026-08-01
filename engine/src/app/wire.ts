@@ -180,6 +180,7 @@ export const wireSelfHarness = (cfg: WireSelfHarnessConfig): SelfHarnessLoop => 
       // case dirs live under --cwd and the spec must be outside --cwd.
       ...(cfg.cwd !== undefined ? { workspaceRoot: cfg.cwd } : {}),
       ...(cfg.spec.caseFiles !== undefined ? { caseFiles: cfg.spec.caseFiles } : {}),
+      ...(cfg.spec.caseFilePins !== undefined ? { caseFilePins: cfg.spec.caseFilePins } : {}),
     }),
     k: cfg.spec.k,
   });

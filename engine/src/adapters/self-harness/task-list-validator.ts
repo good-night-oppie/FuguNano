@@ -1,4 +1,5 @@
-import { mkdtemp, rm, copyFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, copyFile, readFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import type { DispatchError, DispatchResult } from '../../domain/dispatch.js';
@@ -44,6 +45,14 @@ export interface TaskListHarnessValidatorOptions<TCase> {
    * case, so a candidate that mutates its copy cannot poison later cases.
    */
   readonly caseFiles?: readonly string[];
+  /**
+   * Optional sha256 pins for caseFiles, keyed by absolute source path. When a
+   * pin is present for a file, its SOURCE content is hashed before every copy
+   * and a mismatch fails the case closed (scores false, never dispatches) —
+   * so a tampered conventions file can't silently rewrite the rules of the
+   * whole evaluation between cases. Files without a pin are copied unchecked.
+   */
+  readonly caseFilePins?: Readonly<Record<string, string>>;
 }
 
 const DEFAULT_TASK_TYPE = 'self-harness-eval';
@@ -68,6 +77,7 @@ export class TaskListHarnessValidator<TCase> implements HarnessValidator {
   private readonly samples: number;
   private readonly workspaceRoot: string | undefined;
   private readonly caseFiles: readonly string[];
+  private readonly caseFilePins: Readonly<Record<string, string>>;
 
   constructor(
     private readonly harness: Harness,
@@ -82,6 +92,7 @@ export class TaskListHarnessValidator<TCase> implements HarnessValidator {
     this.samples = normalizeSamples(options.samples);
     this.workspaceRoot = options.workspaceRoot;
     this.caseFiles = options.caseFiles ?? [];
+    this.caseFilePins = options.caseFilePins ?? {};
   }
 
   async score(config: HarnessConfig): Promise<SplitScores> {
@@ -136,6 +147,15 @@ export class TaskListHarnessValidator<TCase> implements HarnessValidator {
     }
     try {
       for (const file of this.caseFiles) {
+        const pin = this.caseFilePins[file];
+        if (pin !== undefined) {
+          // Hash the SOURCE before every copy: a caseFile tampered mid-run
+          // (the conventions-mutation attack, upstream variant) fails the
+          // case closed instead of silently rewriting the evaluation's rules.
+          const content = await readFile(file);
+          const digest = createHash('sha256').update(content).digest('hex');
+          if (digest !== pin) return false;
+        }
         await copyFile(file, join(workspace, basename(file)));
       }
       const result = await this.dispatch(prompt, workspace);
