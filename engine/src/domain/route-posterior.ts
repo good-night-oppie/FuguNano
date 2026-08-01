@@ -732,7 +732,11 @@ export const classifyOrphan = (
 
   const nowMs = Date.parse(nowIso);
   const deadlineMs = Date.parse(deadlineAt);
-  if (Number.isNaN(nowMs) || Number.isNaN(deadlineMs) || nowMs < deadlineMs) {
+
+  // Pending requires both timestamps valid AND the deadline not yet reached.
+  // Malformed timestamps (NaN) fall through to orphan classification below
+  // instead of returning pending forever (CodeRabbit PR #13, thread 1).
+  if (!Number.isNaN(nowMs) && !Number.isNaN(deadlineMs) && nowMs < deadlineMs) {
     return { kind: 'pending' };
   }
 
@@ -783,10 +787,11 @@ export const classifyOrphan = (
  * tasks of real measurement over a failure that no longer exists.
  */
 export const countOrphanFinalizations = (events: ReadonlyArray<OutcomeEvent>): number => {
+  const orphanCodes = new Set<string>(ORPHAN_REASON_CODES);
   let n = 0;
   for (const group of groupFinalsByRoute(events).values()) {
     const code = effectiveFinal(group)['reason_code'];
-    if (code === 'ORPHANED_EFFECT' || code === 'ORPHANED_SILENT') n += 1;
+    if (typeof code === 'string' && orphanCodes.has(code)) n += 1;
   }
   return n;
 };

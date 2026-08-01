@@ -206,6 +206,20 @@ describe('classifyOrphan', () => {
     expect(classifyOrphan(route.route_id, [route], DEADLINE_AT, WELL_AFTER).kind).toBe('orphan');
   });
 
+  it('F5a malformed deadline → orphan (not forever-pending)', () => {
+    const route = buildRouteDecided(routeInput(1051));
+    // NaN deadline should not return pending forever
+    expect(classifyOrphan(route.route_id, [route], 'not-a-date', WELL_AFTER).kind).toBe('orphan');
+    expect(classifyOrphan(route.route_id, [route], 'not-a-date', BEFORE_DEADLINE).kind).toBe(
+      'orphan',
+    );
+  });
+
+  it('F5b malformed nowIso → orphan (not forever-pending)', () => {
+    const route = buildRouteDecided(routeInput(1052));
+    expect(classifyOrphan(route.route_id, [route], DEADLINE_AT, 'not-a-date').kind).toBe('orphan');
+  });
+
   it('F6 negative control: dispatch.terminal COMPLETED present → never an orphan', () => {
     const route = buildRouteDecided(routeInput(106));
     const terminal = mkTerminal(route.route_id);
