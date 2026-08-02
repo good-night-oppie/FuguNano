@@ -1,6 +1,9 @@
+import { realpathSync } from 'node:fs';
+
 import { Command, Option } from 'clipanion';
 
 import { wireSelfHarness } from '../../app/wire.js';
+import { assertEvaluatorContained } from '../../domain/evaluator-containment.js';
 import { isOk } from '../../domain/result.js';
 import { EDITABLE_SURFACES } from '../../domain/self-harness.js';
 import type { HarnessConfig, LineageEntry } from '../../domain/self-harness.js';
@@ -60,8 +63,18 @@ export class SelfHarnessRunCommand extends Command {
   state = Option.String('--state', stateDir(), {
     description: 'Durable state root (default: FUGUNANO_STATE or ~/.config/fugunano)',
   });
+  /**
+   * REQUIRED since probe 6 (D13). It used to be optional, and omitting it made
+   * both the harness dispatch and the `sh -c` gate inherit the operator's shell
+   * directory — which is exactly where the documented invocation puts the spec.
+   * A candidate could then read every gate out of its own working directory and
+   * score a perfect run without performing the task. There is no safe default
+   * to fall back to, so the flag is mandatory rather than defaulted.
+   */
   cwd = Option.String('--cwd', {
-    description: 'Working directory for harness dispatches and shell gates',
+    required: true,
+    description:
+      'Working directory for harness dispatches and shell gates (must not contain --spec)',
   });
 
   override async execute(): Promise<number> {
@@ -71,17 +84,32 @@ export class SelfHarnessRunCommand extends Command {
       return 1;
     }
 
+    // Containment is checked on realpath-resolved paths so a symlinked spec
+    // cannot point back inside the dispatch directory. Resolution happens here,
+    // at the edge; the predicate itself stays pure.
+    let specReal: string;
+    let cwdReal: string;
+    try {
+      specReal = realpathSync(this.spec);
+      cwdReal = realpathSync(this.cwd);
+    } catch (error) {
+      this.context.stderr.write(`cannot resolve --spec or --cwd: ${message(error)}\n`);
+      return 1;
+    }
+    try {
+      assertEvaluatorContained(specReal, cwdReal);
+    } catch (error) {
+      this.context.stderr.write(`${message(error)}\n`);
+      return 1;
+    }
+
     const parsed = parseSelfHarnessSpec(text);
     if (!isOk(parsed)) {
       this.context.stderr.write(`${parsed.error}\n`);
       return 1;
     }
 
-    const wireConfig =
-      this.cwd === undefined
-        ? { spec: parsed.value, stateDir: this.state }
-        : { spec: parsed.value, stateDir: this.state, cwd: this.cwd };
-    const loop = wireSelfHarness(wireConfig);
+    const loop = wireSelfHarness({ spec: parsed.value, stateDir: this.state, cwd: this.cwd });
     // The JSON spec names one source run; each round re-mines that same run. For fresh
     // evidence between rounds, invoke the CLI again with a new spec/runId.
     let result: Awaited<ReturnType<typeof loop.run>>;

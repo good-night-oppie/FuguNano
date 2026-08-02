@@ -37,7 +37,10 @@ export const runDispatch = async (
   mapping: DispatchMappingOptions = {},
 ): Promise<Result<DispatchResult, DispatchError>> => {
   try {
-    const result = await runner.run(bin, args, options);
+    // A per-request cwd (e.g. the Self-Harness validator's ephemeral per-case
+    // workspace) overrides the harness's constructor-level cwd for this call.
+    const effective = request.cwd !== undefined ? { ...options, cwd: request.cwd } : options;
+    const result = await runner.run(bin, args, effective);
     if (result.code === 0) {
       const falseZeroDetail = mapping.zeroExitError?.(result);
       if (falseZeroDetail !== undefined) {

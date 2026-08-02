@@ -1,4 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { readdirSync as fsReaddirSync } from 'node:fs';
+import {
+  mkdtemp as fsMkdtemp,
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+} from 'node:fs/promises';
+import { tmpdir as osTmpdir } from 'node:os';
+import { join as pathJoin } from 'node:path';
 
 import type {
   DispatchError,
@@ -302,6 +310,207 @@ describe('TaskListHarnessValidator', () => {
     }).score(config);
 
     expect(scores).toEqual({ inPass: 0, inTotal: 0, outPass: 0, outTotal: 0 });
+    expect(harness.requests).toHaveLength(0);
+  });
+});
+
+const wsSetup = async () => {
+  const root = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-ws-root-'));
+  const conventions = pathJoin(
+    root,
+    '..',
+    `conv-${Date.now()}-${Math.random().toString(36).slice(2)}.md`,
+  );
+  await fsWriteFile(conventions, 'RULE: AHOY');
+  return { root, conventions, join: pathJoin };
+};
+
+describe('TaskListHarnessValidator — ephemeral per-case workspaces', () => {
+  it('dispatches each case in a fresh workspace with caseFiles copied in', async () => {
+    const { root, conventions } = await wsSetup();
+
+    const seen: string[] = [];
+    class InspectingHarness implements Harness {
+      readonly name = 'codex';
+      async dispatch(request: DispatchRequest): Promise<Result<DispatchResult, DispatchError>> {
+        const cwd = request.cwd ?? '';
+        seen.push(cwd);
+        // The convention copy must be readable inside the workspace at dispatch time.
+        const body = await fsReadFile(pathJoin(cwd, conventions.split('/').pop() ?? ''), 'utf8');
+        return ok({ agent: request.agent, output: body, exitCode: 0 });
+      }
+      health(this: void): Promise<HealthStatus> {
+        return Promise.resolve({ healthy: true, detail: 'ok' });
+      }
+    }
+
+    const scores = await new TaskListHarnessValidator<Case>(new InspectingHarness(), {
+      heldIn: [
+        { id: 'a', expected: 'RULE: AHOY' },
+        { id: 'b', expected: 'RULE: AHOY' },
+      ],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: (testCase, result, workspace) =>
+        result.output === testCase.expected && workspace !== '' && workspace.startsWith(root),
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [conventions],
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 2, inTotal: 2, outPass: 0, outTotal: 0 });
+    // Each case saw a DIFFERENT fresh workspace under the root.
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).not.toBe(seen[1]);
+    for (const cwd of seen) expect(cwd.startsWith(root)).toBe(true);
+  });
+
+  it('destroys the workspace after each case (no cross-case leakage)', async () => {
+    const { root, conventions } = await wsSetup();
+
+    class PollutingHarness implements Harness {
+      readonly name = 'codex';
+      async dispatch(request: DispatchRequest): Promise<Result<DispatchResult, DispatchError>> {
+        // Simulate a candidate leaving stale artifacts + mutating its conventions copy.
+        const cwd = request.cwd ?? '';
+        await fsWriteFile(pathJoin(cwd, 'ghost.txt'), 'stale');
+        await fsWriteFile(pathJoin(cwd, conventions.split('/').pop() ?? ''), 'RULE: MUTATED');
+        return ok({ agent: request.agent, output: 'done', exitCode: 0 });
+      }
+      health(this: void): Promise<HealthStatus> {
+        return Promise.resolve({ healthy: true, detail: 'ok' });
+      }
+    }
+
+    const ghostsSeen: boolean[] = [];
+    await new TaskListHarnessValidator<Case>(new PollutingHarness(), {
+      heldIn: [
+        { id: 'a', expected: 'x' },
+        { id: 'b', expected: 'x' },
+      ],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: (_testCase, _result, workspace) => {
+        // At verify time, the CURRENT case's ghost exists, but no ghost from a
+        // PRIOR case can — each workspace is fresh.
+        const entries = fsReaddirSync(workspace);
+        ghostsSeen.push(entries.includes('ghost.txt'));
+        return true;
+      },
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [conventions],
+    }).score(config);
+
+    expect(ghostsSeen).toEqual([true, true]);
+    // After scoring, the root contains no leftover case workspaces.
+    expect(fsReaddirSync(root)).toHaveLength(0);
+  });
+
+  it('scores false when a caseFile cannot be copied (infra failure, not a throw)', async () => {
+    const { root } = await wsSetup();
+    const harness = new SequencedHarness([pass('never-reached')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'x' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: () => true,
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: ['/nonexistent/convention-file.md'],
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 0, inTotal: 1, outPass: 0, outTotal: 0 });
+    // The dispatch never ran: copy failure precedes it.
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it('keeps legacy shared-cwd behavior when workspaceRoot is unset', async () => {
+    const harness = new SequencedHarness([pass('ok')]);
+    const workspaces: string[] = [];
+    await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'ok' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: (_testCase, _result, workspace) => {
+        workspaces.push(workspace);
+        return true;
+      },
+      agent: 'agent-1',
+    }).score(config);
+
+    expect(workspaces).toEqual(['']);
+    expect(harness.requests[0]?.cwd).toBeUndefined();
+  });
+});
+
+describe('TaskListHarnessValidator — caseFile source-hash pins', () => {
+  it('fails closed when a pinned caseFile source hash mismatches (tamper detection)', async () => {
+    const { root, conventions } = await wsSetup();
+    const harness = new SequencedHarness([pass('never-reached')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'x' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: () => true,
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [conventions],
+      caseFilePins: { [conventions]: 'deadbeef'.repeat(8) },
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 0, inTotal: 1, outPass: 0, outTotal: 0 });
+    // Tamper detection precedes the dispatch.
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it('passes the pin check when the source hash matches', async () => {
+    const { createHash } = await import('node:crypto');
+    const { root, conventions } = await wsSetup();
+    const body = await fsReadFile(conventions);
+    const pin = createHash('sha256').update(body).digest('hex');
+    const harness = new SequencedHarness([pass('ok')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'ok' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: (_testCase, result) => result.output === 'ok',
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [conventions],
+      caseFilePins: { [conventions]: pin },
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 1, inTotal: 1, outPass: 0, outTotal: 0 });
+    expect(harness.requests).toHaveLength(1);
+  });
+});
+
+describe('TaskListHarnessValidator — caseFiles basename collisions', () => {
+  it('fails closed when two caseFiles share a basename (silent-overwrite guard)', async () => {
+    const { root } = await wsSetup();
+    const dirA = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-a-'));
+    const dirB = await fsMkdtemp(pathJoin(osTmpdir(), 'sh-b-'));
+    const fileA = pathJoin(dirA, 'CONVENTIONS.md');
+    const fileB = pathJoin(dirB, 'CONVENTIONS.md');
+    await fsWriteFile(fileA, 'RULE A');
+    await fsWriteFile(fileB, 'RULE B');
+    const harness = new SequencedHarness([pass('never-reached')]);
+
+    const scores = await new TaskListHarnessValidator<Case>(harness, {
+      heldIn: [{ id: 'a', expected: 'x' }],
+      heldOut: [],
+      renderPrompt: (_config, testCase) => testCase.id,
+      verify: () => true,
+      agent: 'agent-1',
+      workspaceRoot: root,
+      caseFiles: [fileA, fileB],
+    }).score(config);
+
+    expect(scores).toEqual({ inPass: 0, inTotal: 1, outPass: 0, outTotal: 0 });
     expect(harness.requests).toHaveLength(0);
   });
 });

@@ -22,6 +22,20 @@ export interface SelfHarnessSpec {
   readonly samples?: number;
   /** Source run mined on every round; callers that need fresh evidence should run the CLI per source run. */
   readonly runId: string;
+  /**
+   * Absolute paths copied fresh into each case's ephemeral workspace before
+   * its dispatch (e.g. a conventions file the scored agent must discover).
+   * The source may live anywhere readable; only the spec itself is
+   * containment-checked. Fresh copies per case mean a candidate that mutates
+   * its copy cannot poison later cases.
+   */
+  readonly caseFiles?: readonly string[];
+  /**
+   * Optional sha256 pins keyed by caseFiles path. A pinned file's SOURCE is
+   * hashed before every copy; mismatch fails the case closed — a tampered
+   * conventions file cannot silently rewrite the evaluation's rules mid-run.
+   */
+  readonly caseFilePins?: Readonly<Record<string, string>>;
   readonly config: HarnessConfig;
   readonly heldIn: readonly EvalCase[];
   readonly heldOut: readonly EvalCase[];
@@ -38,6 +52,8 @@ const SPEC_KEY_SET: ReadonlySet<string> = new Set([
   'rounds',
   'samples',
   'runId',
+  'caseFiles',
+  'caseFilePins',
   'config',
   'heldIn',
   'heldOut',
@@ -183,6 +199,50 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
     samples = parsed.samples;
   }
 
+  let caseFiles: readonly string[] | undefined;
+  if (parsed.caseFiles !== undefined) {
+    const result = parseStringArray(parsed.caseFiles, 'caseFiles');
+    if (!result.ok) return result;
+    const basenames = new Set<string>();
+    for (let index = 0; index < result.value.length; index += 1) {
+      const path = result.value[index] ?? '';
+      if (path.trim().length === 0) {
+        return err(`caseFiles[${String(index)}] must be a non-empty string`);
+      }
+      if (!path.startsWith('/')) {
+        return err(`caseFiles[${String(index)}] must be an absolute path`);
+      }
+      // Files are copied flat into each workspace, so two sources sharing a
+      // basename would silently shadow one another.
+      const name = path.slice(path.lastIndexOf('/') + 1);
+      if (basenames.has(name)) {
+        return err(`caseFiles has duplicate basename "${name}"`);
+      }
+      basenames.add(name);
+    }
+    caseFiles = result.value;
+  }
+
+  let caseFilePins: Readonly<Record<string, string>> | undefined;
+  if (parsed.caseFilePins !== undefined) {
+    if (!isRecord(parsed.caseFilePins)) return err('caseFilePins must be an object');
+    const declared = new Set(caseFiles ?? []);
+    const pins: Record<string, string> = {};
+    for (const [path, pin] of Object.entries(parsed.caseFilePins)) {
+      if (!path.startsWith('/')) return err(`caseFilePins key "${path}" must be an absolute path`);
+      // A pin key that matches no caseFiles entry is never consulted: the
+      // operator believes the file is pinned while it is copied unchecked.
+      if (!declared.has(path)) {
+        return err(`caseFilePins key "${path}" does not match any caseFiles entry`);
+      }
+      if (typeof pin !== 'string' || !/^[0-9a-f]{64}$/u.test(pin)) {
+        return err(`caseFilePins["${path}"] must be a 64-char lowercase sha256 hex digest`);
+      }
+      pins[path] = pin;
+    }
+    caseFilePins = pins;
+  }
+
   const config = parseConfig(parsed.config);
   if (!config.ok) return config;
 
@@ -203,7 +263,9 @@ export const parseSelfHarnessSpec = (text: string): Result<SelfHarnessSpec, stri
   };
   const withHarness = parsed.harness === undefined ? base : { ...base, harness: parsed.harness };
   const withArgs = harnessArgs === undefined ? withHarness : { ...withHarness, harnessArgs };
-  return ok(samples === undefined ? withArgs : { ...withArgs, samples });
+  const withCaseFiles = caseFiles === undefined ? withArgs : { ...withArgs, caseFiles };
+  const withPins = caseFilePins === undefined ? withCaseFiles : { ...withCaseFiles, caseFilePins };
+  return ok(samples === undefined ? withPins : { ...withPins, samples });
 };
 
 export const renderSelfHarnessSpecTemplate = (): string => {
